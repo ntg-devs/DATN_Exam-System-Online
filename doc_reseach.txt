@@ -1,0 +1,553 @@
+// Mô hình FasterRCNN 
+
+Báo cáo khoa học hoàn chỉnh (có nhấn mạnh các phần tự xây dựng)
+Báo cáo: Nhận diện hành vi gian lận trong thi cử bằng mô hình Faster R-CNN
+1. Giới thiệu
+
+Trong các kỳ thi trực tuyến, việc phát hiện hành vi gian lận như sử dụng điện thoại, trao đổi với người khác, hoặc thao tác trên tay là rất quan trọng để đảm bảo tính công bằng.
+
+Nghiên cứu này đề xuất một hệ thống nhận diện hành vi gian lận dựa trên ảnh/video học sinh sử dụng mô hình Faster R-CNN với backbone ResNet50 + FPN.
+
+Khác với mô hình gốc học trên COCO dataset, hệ thống được tùy chỉnh đặc biệt cho bài toán giám sát thi cử, bao gồm:
+
+Dataset nhãn hóa các hành vi gian lận cụ thể.
+
+Tùy chỉnh lớp predictor cuối để phù hợp số class của hành vi.
+
+Xây dựng pipeline dataset → training → evaluation → visualization độc lập.
+
+2. Nhãn hành vi
+
+Hệ thống phân loại 6 nhãn hành vi học sinh, mã hóa như sau:
+
+Nhãn	Mô tả hành vi	Ý nghĩa trong giám sát thi
+Mobile_Using	Sử dụng điện thoại trong lúc thi	Gian lận nghiêm trọng
+Hand_Move	Di chuyển tay trước khung hình thi	Hành vi khả nghi
+Eye_Movement	Liên tục liếc mắt hoặc nhìn xuống	Nghi ngờ gian lận
+Side_Watching	Nhìn sang bên (trao đổi hoặc nhìn tài liệu)	Gian lận
+Mouth_Open	Mở miệng nói chuyện	Gian lận hoặc nhờ trợ giúp
+Normal	Hành vi bình thường	Không gian lận
+
+Mã hóa nhãn trong dataset:
+
+eye_movement 0  
+hand_move 1  
+mobile_use 2  
+side_watching 3  
+mouth_open 4  
+normal 5
+
+3. Cấu trúc mô hình và các phần tự xây dựng
+3.1 Backbone và pre-trained weights
+
+Sử dụng ResNet50 + FPN pre-trained trên COCO dataset.
+
+Backbone trích xuất feature map, giữ nguyên trọng số gốc.
+
+3.2 Predictor cuối tùy chỉnh
+
+Lớp FastRCNNPredictor được thay bằng predictor cho 6 nhãn + background, khác với lớp gốc dùng 91 class COCO.
+
+Giúp mô hình tập trung học đặc trưng hành vi học sinh.
+
+3.3 Dataset & preprocessing (tự xây dựng)
+
+Class DetectionDataset tự viết để đọc ảnh + nhãn YOLO → bounding box.
+
+Tạo dict target theo yêu cầu Faster R-CNN:
+
+{
+    "boxes": boxes,
+    "labels": labels,
+    "image_id": idx,
+    "area": box_area,
+    "iscrowd": zeros
+}
+
+
+Transform: ToTensor(); có thể bổ sung augmentation.
+
+3.4 Training loop (tự xây dựng)
+
+Lặp qua batch, tính loss, backward, step optimizer.
+
+Optimizer: SGD(lr=0.005, momentum=0.9, weight_decay=0.0005)
+
+Scheduler: StepLR(step_size=5, gamma=0.1)
+
+Batch size 2 phù hợp GPU GTX 1650 Ti.
+
+Logging tiến trình từng batch.
+
+3.5 Evaluation & visualization (tự xây dựng)
+
+Inference: lọc boxes theo score_thresh=0.4.
+
+draw_boxes_on_image: vẽ bounding boxes, nhãn, score lên ảnh, lưu vào val_results.
+
+Hoàn toàn khác với hàm visualize mặc định của torchvision.
+
+3.6 Main pipeline (tự xây dựng)
+
+Tạo thư mục checkpoints, val_results.
+
+Chạy training, evaluation, visualization theo đúng workflow bài toán.
+
+4. Ý nghĩa nghiên cứu
+
+Giúp giám sát tự động trong thi cử trực tuyến, giảm sự phụ thuộc vào giám thị.
+
+Tùy chỉnh mô hình pre-trained cho bài toán chuyên biệt, tăng độ chính xác nhận diện hành vi gian lận.
+
+Dễ dàng mở rộng cho hành vi mới bằng cách thêm nhãn vào dataset và predictor cuối.
+
+5. Kết luận
+
+Hệ thống Faster R-CNN tùy chỉnh:
+
+Nhận diện đa dạng hành vi gian lận trong thi cử.
+
+Dễ dàng train lại trên dataset của từng trường học hoặc kỳ thi khác nhau.
+
+Hỗ trợ giám sát trực tuyến hiệu quả, giảm thiểu gian lận.
+
+Các phần tự xây dựng gồm: dataset parsing, predictor, training loop, evaluation, visualization và main script → đảm bảo hệ thống khác biệt hoàn toàn với mô hình gốc chỉ học object chung.
+
+6. Kết quả mô hình 
+| Nhãn              | Precision (P) | Recall (R) | F1 Score | Nhận xét                                                                                           |
+| ----------------- | ------------- | ---------- | -------- | -------------------------------------------------------------------------------------------------- |
+| **eye_movement**  | 0.911         | 0.925      | 0.918    | Mô hình nhận diện hành vi **liếc mắt hoặc nhìn xuống** rất tốt, gần như chính xác tuyệt đối.       |
+| **hand_move**     | 0.772         | 0.732      | 0.752    | Nhận diện **di chuyển tay** tốt, nhưng vẫn còn một số trường hợp bỏ sót hoặc nhận nhầm.            |
+| **mobile_use**    | 0.686         | 0.686      | 0.686    | Hành vi **sử dụng điện thoại** khó phát hiện hơn, mô hình đạt độ chính xác trung bình.             |
+| **side_watching** | 0.668         | 0.674      | 0.671    | Hành vi **nhìn sang bên** khá khó, do góc nhìn và biến thể của học sinh, F1 thấp hơn các lớp khác. |
+| **mouth_open**    | 0.834         | 0.857      | 0.846    | Mô hình phát hiện **mở miệng nói chuyện** hiệu quả, có thể dùng để cảnh báo gian lận bằng lời nói. |
+| **normal**        | 0.857         | 0.857      | 0.857    | Mô hình nhận diện hành vi bình thường ổn định, ít nhầm lẫn với các hành vi gian lận.               |
+
+
+
+
+
+// Báo cáo mô hình CNN tự xây 
+
+1. Mục tiêu & bối cảnh
+
+Mục tiêu: Huấn luyện một mạng CNN tùy chỉnh để phân loại 6 lớp hành vi của sinh viên trong môi trường thi trực tuyến:
+['eye_movement','hand_move','mobile_use','side_watching','mouth_open','normal'].
+
+Dữ liệu: thư mục theo cấu trúc train/images, train/labels (nhãn bên dưới dạng file .txt), valid/*, test/images (test có thể không có nhãn).
+
+Thực thi: PyTorch, CPU/GPU tuỳ có, lưu model vào E:/TN_Project/.../models.
+
+2. Tổng quan pipeline (theo thứ tự thực thi)
+
+Check environment (phiên bản Python, PyTorch, RAM, threads).
+
+Định nghĩa transforms/augmentation (train/val/test).
+
+Custom Dataset để đọc ảnh (.jpg/.png) và nhãn từ file .txt.
+
+DataLoader cho train/val/test.
+
+Định nghĩa mạng CustomCNN.
+
+Định nghĩa loss LabelSmoothingLoss.
+
+Thiết lập optimizer (AdamW) và scheduler (OneCycleLR).
+
+EarlyStopping dựa trên validation loss.
+
+Vòng train nhiều epoch, validate mỗi epoch, step scheduler mỗi batch.
+
+Sau training: đánh giá test, in classification_report, vẽ confusion matrix, lưu plots và model.
+
+3. Giải thích chi tiết từng phần mã
+3.1 Logging & environment
+logging.basicConfig(level=logging.INFO, ...)
+logger = logging.getLogger()
+MODEL_DIR = 'E:/.../models'
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+
+Dùng logger để in thông tin/progress. os.makedirs(..., exist_ok=True) đảm bảo thư mục lưu model tồn tại.
+
+3.2 CustomDataset
+class CustomDataset(Dataset):
+    def __init__(self, image_dir, label_dir=None, transform=None):
+        self.image_paths = sorted([...])
+        self.label_paths = None
+        if label_dir and os.path.exists(label_dir):
+            self.label_paths = sorted([...])
+            if len(self.image_paths) != len(self.label_paths):
+                raise ValueError(...)
+        self.transform = transform
+    def __len__(self): ...
+    def __getitem__(self, idx):
+        image = Image.open(self.image_paths[idx]).convert('L')
+        if self.transform: image = self.transform(image)
+        if self.label_paths:
+            with open(self.label_paths[idx], 'r') as f:
+                line = f.readline().strip()
+                label = int(line.split()[0])
+            return image, label
+        else:
+            return image, -1
+
+
+Đọc ảnh: convert('L') chuyển sang grayscale (1 channel). Phù hợp với CNN thiết kế nhận 1 channel.
+
+Nhãn: đọc file text, dùng token đầu tiên làm class index. Hạn chế: giả định format file .txt phải đúng (mỗi file 1 dòng, class đầu).
+
+Trả về: nếu không có label (test) trả -1, và evaluate bỏ qua sample có label -1.
+
+Lưu ý: sorted() giúp pairing ảnh-nhãn ổn định nếu file tên tương ứng theo thứ tự.
+
+3.3 Transforms / Augmentation
+train_transform = transforms.Compose([
+    transforms.Grayscale(1), transforms.Resize((64,64)),
+    RandomHorizontalFlip, RandomRotation(15),
+    RandomAffine(...),
+    ColorJitter(brightness=0.2, contrast=0.2),
+    ToTensor(), Normalize(mean=[0.5], std=[0.5]),
+    RandomErasing(p=0.5, scale=(0.02,0.2))
+])
+val_test_transform = same resize + ToTensor + Normalize
+
+
+Mục đích: tăng đa dạng ảnh huấn luyện, giảm overfitting.
+
+RandomErasing mạnh: p=0.5 là cao — có thể hiệu quả nhưng cũng làm khó học nếu ảnh nhỏ (64×64) và class chi tiết.
+
+ColorJitter trên ảnh grayscale làm gì? Vì trước Grayscale đã convert, ColorJitter có thể không thay đổi nhiều; mặc dù torchvision sẽ vẫn áp dụng (trên single channel), nhưng ý nghĩa hạn chế. Nếu muốn jitter, nên áp dụng trước convert -> hoặc bỏ ColorJitter nếu ảnh đã gray.
+
+3.4 Load dataset & DataLoader
+train_dataset = CustomDataset(train_image_dir, train_label_dir, transform=train_transform)
+val_dataset = CustomDataset(val_image_dir, val_label_dir, transform=val_test_transform)
+test_dataset = CustomDataset(test_image_dir, label_dir=None, transform=val_test_transform)
+
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=2, pin_memory=True)
+...
+
+
+batch_size=64: hợp lý nếu GPU có VRAM; trên CPU có thể chậm.
+
+num_workers=2: tăng tốc IO; trên Windows cần cẩn thận (spawn), nhưng 2 là an toàn.
+
+weights: code tính weights dựa vào distribution, nhưng không thấy dùng trong loss/criterion hoặc sampler — bạn có thể dùng WeightedRandomSampler hoặc cấp weight cho CrossEntropyLoss.
+
+3.5 Mạng CustomCNN
+self.features = nn.Sequential(
+    Conv2d(1,32,3,1,1), BN, ReLU, MaxPool2d,
+    32->64, 64->128, 128->512
+)
+self.classifier = nn.Sequential(
+    Dropout(0.4),
+    Linear(512*4*4,1024), ReLU,
+    Dropout(0.4),
+    Linear(1024,num_classes)
+)
+
+
+Input image size: 64×64 → 4 lần MaxPool2d (kernel2) => kích thước cuối feature map = 64/2/2/2/2 = 4 → 512×4×4 flatten → Linear đúng.
+
+BatchNorm giúp ổn định training.
+
+Dropout 0.4 khá mạnh nhưng hợp lý cho tránh overfitting.
+
+512 channels cuối khá lớn — model có thể mạnh; nếu dữ liệu nhỏ có thể overfit.
+
+Khuyến nghị kiến trúc:
+
+Khởi tạo trọng số (He init) có thể giúp.
+
+Thử giảm số filter cuối nếu data nhỏ.
+
+Thử transfer learning (pretrained ResNet/efficientnet) thường cải thiện kết quả cho ảnh nhỏ/limited dataset.
+
+3.6 Label Smoothing Loss
+class LabelSmoothingLoss(nn.Module):
+    def __init__(self, classes, smoothing=0.1):
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+    def forward(self,pred,target):
+        pred = pred.log_softmax(dim=-1)
+        true_dist = torch.zeros_like(pred)
+        true_dist.fill_(self.smoothing / (self.cls-1))
+        true_dist.scatter_(1,target.data.unsqueeze(1),self.confidence)
+        return torch.mean(torch.sum(-true_dist*pred,dim=-1))
+
+
+Ý nghĩa: thay vì one-hot target, làm mượt nhãn (label smoothing) để tránh model quá tự tin, giúp generalize.
+
+Smoothing=0.1 là mặc định hợp lý.
+
+So sánh: có thể dùng torch.nn.KLDivLoss hoặc CrossEntropy với smoothing; hiện cách triển khai hợp lệ.
+
+3.7 Optimizer & Scheduler
+optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+scheduler = OneCycleLR(optimizer, max_lr=0.003, epochs=num_epochs, steps_per_epoch=len(train_loader))
+scheduler.step()  # gọi mỗi batch trong training loop
+
+
+AdamW: có weight decay tách rời, tốt.
+
+OneCycleLR: chiến lược LR tăng nhanh đến max_lr rồi giảm; cần gọi scheduler.step() mỗi batch (mã làm đúng).
+
+LR init: lr=0.001, max_lr=0.003 -> reasonable.
+
+3.8 EarlyStopping
+
+EarlyStopping theo val_loss, patience=15, delta=0.001.
+
+Khi triggered, best_model được load lại để đảm bảo model tốt nhất theo val_loss.
+
+3.9 Training loop
+
+Vòng for epoch in range(num_epochs):
+
+model.train()
+
+với mỗi batch: optimizer.zero_grad(), forward, loss.backward(), optimizer.step(), scheduler.step()
+
+accumulate running_loss, compute train_acc
+
+sau epoch: evaluate trên val_loader (evaluate function)
+
+lưu các list losses/accs để vẽ
+
+check early stopping
+
+Một vài điểm nhỏ:
+
+Không dùng torch.cuda.empty_cache() — không bắt buộc nhưng có ích khi dùng GPU trong loop.
+
+Không lưu checkpoint giữa các epoch — nếu muốn resume cần thêm torch.save checkpoint (mã trước có làm, nhưng bản cuối không).
+
+evaluate bỏ qua batch có label -1 (test set không label) — đúng.
+
+3.10 Evaluate & báo cáo
+
+Sau training: evaluate(model,test_loader,criterion,device) nếu có các nhãn thực sẽ in:
+
+classification_report (precision/recall/f1/support)
+
+confusion_matrix rồi vẽ heatmap bằng seaborn → lưu confusion_matrix.png.
+
+Vẽ train_losses, val_losses, train_accs, val_accs → lưu training_plot2.png.
+
+Lưu model state_dict final_model2.pth.
+
+4. Những khác biệt/ghi chú so với phiên bản trước (trong comment của bạn)
+
+Phiên bản trước có: mixup/cutmix, LabelSmoothing, checkpoint save/load, export ONNX. Phiên bản hiện tại:
+
+Không còn mixup/cutmix (các hàm mixup/cutmix đã bị loại bỏ trong bản cuối bạn dán?) — tuy nhiên trong đoạn đầu bạn gửi có mixup/cutmix; bản cuối hiện tại không dùng.
+
+Không có checkpoint save/load — nghĩa là nếu training gián đoạn, bạn sẽ mất tiến trình (trước đó có save_checkpoint & load_checkpoint).
+
+Export ONNX bị loại bỏ.
+
+Nếu bạn muốn resume hoặc lưu checkpoint thường xuyên, thêm lại logic checkpoint (mã trong phần comment trước đó rất hữu ích).
+
+5. Vấn đề tiềm ẩn & lỗi có thể gặp khi chạy
+
+File/đường dẫn: hard-coded E:/... — nếu chạy trên máy khác cần chỉnh.
+
+Số lượng images/nhãn không khớp: CustomDataset sẽ raise; tốt để catch exception sớm.
+
+ColorJitter trên grayscale: không có nhiều tác dụng.
+
+RandomErasing p=0.5 + ảnh nhỏ 64×64: có thể xóa quá nhiều thông tin — kiểm tra ảnh augmented để đảm bảo không phá hỏng mẫu.
+
+Class imbalance: bạn tính weights nhưng không dùng. Điều này có thể dẫn đến bias. Cần dùng WeightedRandomSampler hoặc loss có trọng số.
+
+num_workers trên Windows: value >0 có thể gây issue nếu hàm dataset không picklable; nhưng code đơn giản nên ổn. Nếu gặp lỗi, thử num_workers=0.
+
+Memory & device: nếu GPU tốt, set device='cuda'. Nếu CPU only, training sẽ rất chậm.
+
+Scheduler OneCycleLR: phải chắc steps_per_epoch = len(train_loader) đúng; nếu scheduler nhận steps_per_epoch khác, LR schedule sai.
+
+evaluate dùng running_loss/len(loader) nhưng running_loss là tổng loss trên batches — hợp lý. Nhưng nếu dataset rất nhỏ, kiểm tra chia cho 0.
+
+Random seed: không set seed -> kết quả không tái lập chính xác.
+
+6. Đề xuất cải tiến — short & actionable
+6.1 Tái tạo & ổn định
+
+Fix random seed:
+
+import random, torch, numpy as np
+seed = 42
+random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+
+6.2 Checkpoint & resume
+
+Thêm lưu checkpoint mỗi epoch (model_state_dict, optim, scheduler, epoch, metrics). Khi resume, load lại.
+
+Ví dụ đơn giản:
+
+torch.save({
+  'epoch': epoch,
+  'model_state_dict': model.state_dict(),
+  'optimizer_state_dict': optimizer.state_dict(),
+  'scheduler_state_dict': scheduler.state_dict(),
+}, path)
+
+6.3 Class imbalance
+
+Dùng WeightedRandomSampler hoặc đưa weights vào CrossEntropyLoss(weight=...).
+
+Hoặc oversample lớp ít.
+
+6.4 Các augmentation & preprocessing
+
+Chuyển ColorJitter trước Grayscale nếu dữ liệu màu; nếu chỉ grayscale hãy loại ColorJitter.
+
+Giảm RandomErasing p xuống 0.2 nếu ảnh nhỏ.
+
+Thử Cutout, gaussian blur, hoặc AutoAugment.
+
+6.5 Mô hình & transfer learning
+
+Thử fine-tune ResNet18/34, EfficientNet hoặc MobileNetV3 pretrained (đổi conv đầu để 1 channel hoặc duplicate channel).
+
+Lợi ích: convergence nhanh hơn, khả năng generalize tốt hơn với lượng data hạn chế.
+
+6.6 Mixed precision & speed
+
+Nếu GPU Nvidia, dùng torch.cuda.amp để mixed precision giảm VRAM và tăng tốc.
+
+6.7 Metrics & calbacks
+
+Lưu best model theo val_acc hoặc val_f1 (tuỳ mục tiêu).
+
+Thêm callback để log LR, GradNorm, v.v. (tensorboard, wandb).
+
+6.8 Hyperparameter tuning
+
+LR tuner (LR finder) hoặc grid/random search cho lr, weight_decay, dropout, batch_size.
+
+6.9 Testing & deployment
+
+Sau training, export ONNX (phiên bản trước có). Nếu muốn deploy trên CPU, kiểm tra torch.onnx.export đúng opset_version.
+
+Đóng gói preprocessing consistent (resize, normalize) khi inference.
+
+7. Checklist trước khi chạy (quick)
+
+Xác nhận data_dir đúng và cấu trúc folders: train/images, train/labels, valid/images, valid/labels, test/images.
+
+Kiểm tra số lượng ảnh / nhãn bằng script nhanh.
+
+Chạy 1 epoch test nhỏ (ví dụ num_epochs=1, batch_size nhỏ) để debug pipeline.
+
+Nếu dùng GPU, kiểm tra device = torch.device('cuda') và nvidia-smi.
+
+Giữ bản backup của code trước khi thay đổi augmentation/architectures.
+
+8. Gợi ý thí nghiệm (experiments) có thể chạy
+
+Baseline: current model với num_epochs=30, batch_size=64, save best checkpoint theo val_loss.
+
+Transfer learning: fine-tune ResNet18 (pretrained), freeze initial layers, compare val_acc.
+
+MixUp / CutMix: bật lại mixup/cutmix (như trong phiên bản comment) từ epoch > 3 — test ảnh hưởng.
+
+Class-weighted loss: dùng CrossEntropyLoss(weight=weights) so sánh với LabelSmoothing.
+
+Aug ablation: tắt RandomErasing, tắt ColorJitter, thay đổi p để xem ảnh hưởng.
+
+OneCycleLR tuning: grid thử max_lr ∈ {1e-3, 3e-3, 1e-2}.
+
+9. Mã mẫu (snippets) bổ trợ — checkpoint, seed, weighted loss
+Seed reproducibility
+def set_seed(seed=42):
+    import random, numpy as np, torch
+    random.seed(seed); np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+set_seed(42)
+
+Weighted loss (class imbalance)
+# weights: torch.tensor([...]) đã tính; chuyển về device
+weights = weights.to(device)
+criterion = nn.CrossEntropyLoss(weight=weights)
+# hoặc kết hợp với label smoothing bằng custom loss + class weights -> cần sửa true_dist fill tùy theo weights (phức tạp hơn)
+
+Save/Load checkpoint
+def save_ckpt(path, model, optimizer, scheduler, epoch):
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict()
+    }, path)
+
+def load_ckpt(path, model, optimizer=None, scheduler=None, device='cpu'):
+    ckpt = torch.load(path, map_location=device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    if optimizer and 'optimizer_state_dict' in ckpt: optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    if scheduler and 'scheduler_state_dict' in ckpt: scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+    return ckpt.get('epoch', 0)
+
+10. Tóm tắt chính (bullet)
+
+Pipeline hợp lý: dataset->augment->cnn->label smoothing->onecycleLR->early stopping->evaluate.
+
+Điểm mạnh: BatchNorms, Dropouts, LabelSmoothing tốt cho generalize; OneCycleLR thường giúp converge nhanh.
+
+Điểm cần cải thiện: checkpoint/resume, xử lý class imbalance (weights chưa dùng), augmentation hơi mạnh (RandomErasing p=0.5), harness transfer learning khi dữ liệu hạn chế.
+
+Khuyến nghị: bật seed, thêm checkpoint, cân nhắc pretrained backbone, kiểm tra augmentation trực quan trước khi train dài.
+
+11. Kết quả của mô hình 
+
+Accuracy: 0.9983
+
+               precision    recall  f1-score   support
+
+ eye_movement       1.00      1.00      1.00       265
+    hand_move       1.00      1.00      1.00       218
+   mobile_use       1.00      1.00      1.00       204
+side_watching       1.00      1.00      1.00       230
+   mouth_open       0.99      1.00      1.00       182
+       normal       1.00      0.96      0.98        50
+
+     accuracy                           1.00      1149
+    macro avg       1.00      0.99      1.00      1149
+ weighted avg       1.00      1.00      1.00      1149
+
+
+// Bộ dataset
+
+Training Dataset Info:
+Total images: 5863
+Total bounding boxes: 5883
+Number of boxes per class:
+  mobile_use (3): 1142
+  side_watching (4): 1203
+  normal (6): 403
+  hand_move (2): 1162
+  eye_movement (1): 1165
+  mouth_open (5): 808
+
+
+Validation Dataset Info:
+Total images: 1149
+Total bounding boxes: 1155
+Number of boxes per class:
+  normal (6): 51
+  mouth_open (5): 182
+  eye_movement (1): 265
+  hand_move (2): 223
+  side_watching (4): 230
+  mobile_use (3): 204
+
+
+| Nhãn              | Mô tả hành vi                                          | Ý nghĩa trong giám sát thi |
+| ----------------- | ------------------------------------------------------ | -------------------------- |
+| **Mobile_Using**  | Sử dụng điện thoại trong lúc thi                       | Gian lận nghiêm trọng      |
+| **Hand_Move**     | Di chuyển tay trước khung hình thi                     | Hành vi khả nghi           |
+| **Eye_Movement**  | Liên tục liếc mắt hoặc nhìn xuống                      | Nghi ngờ gian lận          |
+| **Side_Watching** | Nhìn sang bên (trao đổi hoặc nhìn tài liệu)            | Gian lận                   |
+| **Mouth_Open**    | Mở miệng nói chuyện                                    | Gian lận hoặc nhờ trợ giúp |

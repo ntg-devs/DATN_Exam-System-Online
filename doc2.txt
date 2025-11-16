@@ -1,0 +1,56 @@
+- các hành vi gian lận:
+1.
+thi ở đâu?
+hình thức thi trên máy tính 
+môi trường thi?
+đánh giá thế nào là gian lận?
+phạm vi áp dụng đề tài?
+thi online
+thi offline
+chạy trên cùng 1 bộ dataset
+viết mô tả dataset 
+bao nhiếu nhãn?
+
+
+số lượng từng nhãn?
+cách để có được file nhãn, giải thích các tham số
+
+tự gán nhãn hay gán bằng thuật toán?
+trước khi gán nhãn teen gì và sau khi gán nhãn tên gì?
+
+
+Trả lời các câu hỏi
+1. hình gốc
+2. nhãn là file txt gồm index hành vi và tên ảnh
+3. cách để cso được nhãn?(ảnh thuộc hànhvi nào)- có nhãn sẵn.
+
+
+giảng viên- sinh viên
+
+sinh viên cần mã và mật khẩu để vào phòng thi
+
+lớp học?
+môn học?
+dánh sách sinh viên học môn đó?
+ngày thi? giờ thi? phòng thi? ca thi?
+danh sach thi cho từng phòng?
+
+thêm sinh viên có hình ảnh rồi.
+thông tin sinh viên có trước rồi.
+
+sinh viên khi đăng kí tài khoản cần có thêm hình ảnh
+giảng viên cần tạo 1 lớp học, chọn sinh viên tham gia lớp học, tạo phòng thi
+
+giảng viên tạo lịch thi.
+sinh viên vào thi cần xcas nhận khuân mặt k khớp thì hiện cảnh báo
+
+
+đăng nhập -> vào lớp-> chọn thi -> xác nhận khuân mặt ->  làm bài thi ( setup camera)
+
+
+đóng khung hành vi gian lận
+5s thì sẽ cảnh báo gian lận - hightlight hành vi ở trang giảng viên
+
+chụp hình lưu lại thời điểm vi phạm, k vi phạm thì k cắt frame
+
+phải có hình ảnh minh chứng:

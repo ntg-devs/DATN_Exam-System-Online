@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* Vòng quét khuôn mặt */
+.face-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: all 0.8s ease;
+  z-index: 10; /* Ensure face-ring is below video */
+}
+
+.face-ring.center {
+  background: conic-gradient(from 0deg, #818cf8, #c7d2fe, #818cf8);
+}
+
+.face-ring.left {
+  background: conic-gradient(from 270deg, #6366f1, #a5b4fc, #e0e7ff, #6366f1);
+  filter: brightness(1.2);
+}
+
+.face-ring.right {
+  background: conic-gradient(from 90deg, #6366f1, #a5b4fc, #e0e7ff, #6366f1);
+  filter: brightness(1.2);
+}
+
+.face-ring.up {
+  background: conic-gradient(from 0deg, #6366f1, #a5b4fc, #e0e7ff, #6366f1);
+  box-shadow: 0 -5px 15px rgba(99,102,241,0.3);
+}
+
+.face-ring.down {
+  background: conic-gradient(from 180deg, #6366f1, #a5b4fc, #e0e7ff, #6366f1);
+  box-shadow: 0 5px 15px rgba(99,102,241,0.3);
+}
+
+.face-ring::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: white;
+  z-index: 5; /* Ensure inner circle is below video */
+}
+
+video {
+  transform: scaleX(-1);
+  z-index: 20; /* Ensure video is above face-ring */
+}

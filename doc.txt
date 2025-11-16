@@ -1,0 +1,23 @@
+Cần phải bổ sung thêm mã code lớp học để học sinh có thể lấy mã code vào lớp học
+Sử dụng socket để có thể tải lớp học realtime từ giáo viên ---> xong
+Cải thiện độ chuẩn của mô hình
+Cải thiện thông số và độ giật lag của ứng dựng
+Giáo viên có thể xóa lớp học trước khoảng thời gian thi 30p
+Học sinh chỉ có thể vào lớp trong khung giờ thi trước 15p
+Bổ sung api realtime cho nhận diện khuôn mặt trong lúc thi
+
+- Điều chỉnh lại giao diện cho phù hợp với trường đại học --> xong
+ảng viên toàn quyền tạo lớp, có thể chọn lớp public hoặc private,
+và học sinh sẽ tham gia tự do hoặc qua mã/mật khẩu, tùy vào cài đặt.
+
+Phân luồn logic khi chuyển trang phân quyền cho trang
+
+===> Hoàn thành 
++ Bổ sung dừng thi cho giảng viên khi giảng viên bấm vào thì toàn bộ sinh viên out
++ Sửa tên bài thi -> 
++ Check thời gian mở lịch thi 
++ Validation thời gian chọn thi
++ Để lại một tag Vào phòng thi chỗ lịch thi cho sinh viên
++ Kiểm tra logic thời gian mở ca thi
++ Trang lịch sử vi phạm có thẻ mở rộng hình ảnh
+
