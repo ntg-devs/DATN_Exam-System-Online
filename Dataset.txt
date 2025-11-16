@@ -1,0 +1,80 @@
+| Nhãn              | Mô tả hành vi                                          | Ý nghĩa trong giám sát thi |
+| ----------------- | ------------------------------------------------------ | -------------------------- |
+| **Mobile_Using**  | Sử dụng điện thoại trong lúc thi                       | Gian lận nghiêm trọng      |
+| **Hand_Move**     | Di chuyển tay trước khung hình thi                     | Hành vi khả nghi           |
+| **Eye_Movement**  | Liên tục liếc mắt hoặc nhìn xuống                      | Nghi ngờ gian lận          |
+| **Side_Watching** | Nhìn sang bên (trao đổi hoặc nhìn tài liệu)            | Gian lận                   |
+| **Mouth_Open**    | Mở miệng nói chuyện                                    | Gian lận hoặc nhờ trợ giúp |
+
+
+- Hình thức thi online, gian lận khi thỏa những điều kiện mô tả hành vi của nhãn dữ liệu
+- Phạm vi áp dụng tổ chức, trường học (đại học), trung tâm thi online - thi trên máy tính có camera
+- Khung hình dược quy định bởi giám thị coi thi, khung hình camera khi quay phải bao quát được khuôn mặt và phần cơ thể từ bả vai đổ lên trên
+- Gán nhãn cho hành vi nào 
+
+
+Dữ liệu tự quay thực hiện cắt 2 ảnh / giây 
+vì video quay khá chậm và rõ ràng nên khi cắt quá nhanh sẽ bị trùng giữa các ảnh
+
+eye_movement 0
+hand_move 1
+mobile_use 2
+side_watching 3
+mouth_open 4
+normal 5
+
+🎯 Vai trò của từng phần
+1️⃣ train/
+
+Mục đích: Dùng để huấn luyện mô hình — giúp mô hình “học” được đặc trưng của các hành vi.
+
+Gồm:
+
+images/ chứa ảnh đầu vào.
+
+labels/ chứa các file .txt tương ứng, mỗi file mô tả các bounding box và class.
+
+📘 Trong quá trình huấn luyện, mô hình sẽ:
+
+Nhìn thấy tất cả ảnh trong train/images.
+
+Học cách nhận diện 5 nhãn của bạn:
+eye_movement, hand_move, mobile_use, side_watching, mouth_open.
+
+2️⃣ valid/ (validation set)
+
+Mục đích: Đánh giá hiệu suất thật sự của mô hình trong quá trình huấn luyện.
+
+Mô hình không học từ dữ liệu này, chỉ dùng để kiểm tra tạm thời sau mỗi epoch.
+    
+🧠 Ví dụ:
+
+Khi bạn chạy lệnh:
+
+model.train(data="data_students_behavior.yaml", epochs=20)
+
+
+YOLO sẽ:
+
+Dùng train/ để huấn luyện.
+
+Dùng valid/ để tính accuracy, loss, mAP, precision, recall sau mỗi epoch.
+
+🎯 Mục tiêu:
+Nếu train accuracy cao mà val accuracy thấp → mô hình bị overfitting (học thuộc lòng mà không tổng quát được).
+
+3️⃣ test/
+
+Mục đích: Đánh giá sau cùng độ chính xác của mô hình sau khi huấn luyện hoàn tất.
+
+Không tham gia vào quá trình học hay kiểm tra trung gian.
+
+⚙️ Dùng để kiểm chứng khả năng tổng quát của mô hình:
+
+“Nếu gặp ảnh hoàn toàn mới, mô hình còn nhận diện chính xác không?”
+
+📊 Tóm tắt dễ nhớ
+Folder	Vai trò	Mô hình có “thấy” trong lúc huấn luyện không?
+train/	Dạy mô hình học	✅ Có
+valid/	Đánh giá trong lúc huấn luyện	⚠️ Không học, chỉ kiểm tra
+test/	Kiểm tra sau cùng (khi mô hình đã hoàn thiện)	❌ Không
