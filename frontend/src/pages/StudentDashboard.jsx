@@ -233,7 +233,6 @@
 //   );
 // }
 
-
 import { useEffect, useState } from "react";
 import { getClasses, joinClass } from "../services/services";
 import toast, { Toaster } from "react-hot-toast";
@@ -242,6 +241,9 @@ import { useNavigate, Link } from "react-router-dom";
 import { LogOut, GraduationCap } from "lucide-react";
 import { FaLock, FaUnlock, FaChalkboardTeacher } from "react-icons/fa";
 import { MdClass } from "react-icons/md";
+import { pushNotification } from "../redux/slices/notificationSlice";
+import { useDispatch } from "react-redux";
+import NotificationBell from "../components/NotificationBell";
 
 export default function StudentDashboard() {
   const [myClasses, setMyClasses] = useState([]);
@@ -255,6 +257,7 @@ export default function StudentDashboard() {
   const { userInfo } = useSelector((state) => state.user);
   const studentId = userInfo?._id;
   const navigate = useNavigate();
+  const dispatch = useDispatch();
 
   const fetchClasses = async () => {
     if (!studentId) return;
@@ -381,6 +384,7 @@ export default function StudentDashboard() {
       }
 
       if (data.type === "class_updated") {
+        // toast.success(`Bạn đã được thêm vào lớp học ${data.class.name}`);
         const updatedClass = data.class;
 
         if (updatedClass.students.includes(studentId)) {
@@ -419,12 +423,19 @@ export default function StudentDashboard() {
           </Link>
 
           <div className="flex items-center gap-6 text-gray-700 font-medium">
-            <Link to="/student_dashboard" className="hover:text-indigo-600 transition">
+            <Link
+              to="/student_dashboard"
+              className="hover:text-indigo-600 transition"
+            >
               Trang chủ
             </Link>
-            <Link to="/student_violation_history" className="hover:text-indigo-600 transition">
+            <Link
+              to="/student_violation_history"
+              className="hover:text-indigo-600 transition"
+            >
               Lịch sử vi phạm
             </Link>
+            <NotificationBell studentId={userInfo._id}/>
             <button className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
               <LogOut size={18} /> Đăng xuất
             </button>
@@ -436,7 +447,9 @@ export default function StudentDashboard() {
       <div className="flex gap-4 mb-6 mt-6 mx-46">
         <button
           className={`px-6 py-2 rounded-xl font-semibold transition ${
-            tab === "my" ? "bg-blue-500 text-white" : "bg-gray-200 hover:bg-gray-300"
+            tab === "my"
+              ? "bg-blue-500 text-white"
+              : "bg-gray-200 hover:bg-gray-300"
           }`}
           onClick={() => setTab("my")}
         >
@@ -444,7 +457,9 @@ export default function StudentDashboard() {
         </button>
         <button
           className={`px-6 py-2 rounded-xl font-semibold transition ${
-            tab === "other" ? "bg-blue-500 text-white" : "bg-gray-200 hover:bg-gray-300"
+            tab === "other"
+              ? "bg-blue-500 text-white"
+              : "bg-gray-200 hover:bg-gray-300"
           }`}
           onClick={() => setTab("other")}
         >
@@ -465,7 +480,7 @@ export default function StudentDashboard() {
 
       {/* MODAL */}
       {showPasswordModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-opacity-40 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white w-96 p-6 rounded-2xl shadow-xl animate-fadeIn">
             <h2 className="text-xl font-semibold mb-4">🔐 Nhập mật khẩu lớp</h2>
             <input

@@ -197,7 +197,7 @@ function FaceRegister() {
       return;
     }
 
-    setStatus("Đang tải lên...");
+    setStatus("Đang xử lý...");
     const blob = new Blob(chunks, { type: "video/webm" });
     const formData = new FormData();
     formData.append("student_id", studentId);
@@ -211,10 +211,12 @@ function FaceRegister() {
     };
 
     try {
-      const resAccount = await createAccount(payload);
+      // const resAccount = await createAccount(payload);
 
-      if (resAccount.success) {
-        dispatch(login(resAccount.user));
+      // console.log("log", resAccount)
+
+      if (userInfo) {
+        // dispatch(login(resAccount.user));
 
         const res = await fetch("http://localhost:8000/api/register-video", {
           method: "POST",
@@ -222,10 +224,10 @@ function FaceRegister() {
         });
 
         const data = await res.json();
+        console.log(data)
         if (res.ok) {
-          setStatus("Đăng ký khuôn mặt thành công!");
-          toast.success("Đăng ký khuôn mặt thành công!");
-          dispatch(login(resAccount.user));
+          setStatus("Đăng ký danh tính thành công!");
+          toast.success("Đăng ký danh tính thành công!");
           navigate("/dashboard");
         } else {
           setStatus(`Lỗi: ${data.detail || "Không xác định"}`);
@@ -235,7 +237,7 @@ function FaceRegister() {
     } catch (err) {
       console.error("❌ Upload error:", err);
       setStatus("Lỗi kết nối server");
-      toast.error(`Đăng ký khuôn mặt thất bại:\n${err.message}`);
+      toast.error(`Đăng ký danh tính thất bại:\n${err.message}`);
     }
   };
 
@@ -254,7 +256,7 @@ function FaceRegister() {
       />
       <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full">
         <h1 className="text-2xl font-bold text-center text-gray-800 mb-6">
-          Đăng ký Face ID
+          Đăng ký danh tính
         </h1>
 
         <div className="relative mb-6">
@@ -308,7 +310,7 @@ function FaceRegister() {
             onClick={uploadVideo}
             className="w-full bg-green-600 text-white py-3 rounded-xl hover:bg-green-700 transition font-medium"
           >
-            Loading ...
+             Xác nhận
           </button>
         )}
 

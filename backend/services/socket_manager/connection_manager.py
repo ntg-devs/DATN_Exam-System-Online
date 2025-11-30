@@ -7,8 +7,15 @@ class ConnectionManager:
         self.teachers: Dict[str, List[WebSocket]] = {}        # {exam: [ws1, ws2, ...]}
 
     # ---------------- STUDENT ----------------
+    # async def connect_student(self, exam: str, student: str, websocket: WebSocket):
+    #     await websocket.accept()
+    #     if exam not in self.students:
+    #         self.students[exam] = {}
+    #     self.students[exam][student] = websocket
+    #     print(f"[🎓] {student} joined exam {exam}")
+
+    # Chỉnh lại lần 2 theo bổ sung reatime cho nhận diện khuôn mặt kèm hành vi
     async def connect_student(self, exam: str, student: str, websocket: WebSocket):
-        await websocket.accept()
         if exam not in self.students:
             self.students[exam] = {}
         self.students[exam][student] = websocket
@@ -49,3 +56,22 @@ class ConnectionManager:
 
     def get_students_list(self, exam: str):
         return list(self.students.get(exam, {}).keys())
+    
+    # Trong class ConnectionManager
+    async def broadcast_students(self, exam: str, student_ids: list[str], message: dict):
+        if exam not in self.students:
+            print(f"[WS] No students connected for exam {exam}")
+            return
+        dead_ws = []
+        for sid in student_ids:
+            ws = self.students[exam].get(sid)
+            if ws:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    dead_ws.append(sid)
+            else:
+                print(f"[WS] Student {sid} not connected")
+        for sid in dead_ws:
+            await self.disconnect_student(exam, sid)
+

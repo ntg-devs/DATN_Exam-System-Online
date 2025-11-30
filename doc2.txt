@@ -54,3 +54,11 @@ sinh viên vào thi cần xcas nhận khuân mặt k khớp thì hiện cảnh b
 chụp hình lưu lại thời điểm vi phạm, k vi phạm thì k cắt frame
 
 phải có hình ảnh minh chứng:
+
+== > Done
+
+
+
+-> Kiểm tra thêm điều kiện khi đăng kí khuôn mặt nếu trong trường hợp đăng kí không thành công phải yêu cầu dăng kí lại
+-> Bổ sung môi trường nhận diện trong điều kiện khó
+-> Bổ sung nhận diện nhiều đối tượng trong khung hình

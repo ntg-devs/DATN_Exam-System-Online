@@ -444,10 +444,279 @@
 //   );
 // }
 
+// Final (2)
+
+// import React, { useEffect, useRef, useState } from "react";
+// import { useSelector } from "react-redux";
+// import { useSearchParams, Link, useNavigate } from "react-router-dom";
+// import { LogOut, GraduationCap } from "lucide-react";
+
+// export default function StudentLive({ fps = 4 }) {
+//   const videoRef = useRef(null);
+//   const canvasRef = useRef(null);
+//   const wsRef = useRef(null);
+//   const sendCooldown = useRef(0);
+//   const lastAnnotatedUpdate = useRef(0);
+
+//   const [connected, setConnected] = useState(false);
+//   const [detections, setDetections] = useState([]);
+//   const [violationRate, setViolationRate] = useState(0);
+//   const [annotatedFrame, setAnnotatedFrame] = useState(null);
+
+//   const [params] = useSearchParams();
+//   const examId = params.get("exam");
+//   const { userInfo } = useSelector((state) => state.user);
+//   const verifyInfo = useSelector((state) => state.verify.verifyInfo);
+
+//   const navigate = useNavigate();
+
+//   // -----------------------------------------------------
+//   // CAMERA + WEBSOCKET (GIỮ NGUYÊN LOGIC)
+//   // -----------------------------------------------------
+//   useEffect(() => {
+//     let animationId = null;
+//     const targetInterval = 1000 / fps;
+
+//     async function startCamera() {
+//       const stream = await navigator.mediaDevices.getUserMedia({
+//         video: { width: 640, height: 480 },
+//         audio: false,
+//       });
+//       videoRef.current.srcObject = stream;
+//       await videoRef.current.play();
+//     }
+//     startCamera();
+
+//     wsRef.current = new WebSocket(
+//       `ws://localhost:8000/ws/student?exam=${examId}&student=${userInfo.student_id}&class_id=${verifyInfo.classId}`
+//     );
+
+//     wsRef.current.onopen = () => setConnected(true);
+
+//     wsRef.current.onmessage = (ev) => {
+//       const data = JSON.parse(ev.data);
+//       if (data.type !== "self_assessment") return;
+
+//       setDetections(data.detections || []);
+//       setViolationRate(data.violation_rate || 0);
+
+//       if (Date.now() - lastAnnotatedUpdate.current > 300) {
+//         setAnnotatedFrame(data.frame_b64);
+//         lastAnnotatedUpdate.current = Date.now();
+//       }
+//     };
+
+//     wsRef.current.onclose = () => setConnected(false);
+
+//     function loop() {
+//       animationId = requestAnimationFrame(loop);
+//       const now = performance.now();
+//       if (now - sendCooldown.current < targetInterval) return;
+//       sendCooldown.current = now;
+
+//       const video = videoRef.current;
+//       const canvas = canvasRef.current;
+//       if (!video || !canvas) return;
+
+//       const ctx = canvas.getContext("2d");
+//       canvas.width = 640;
+//       canvas.height = 480;
+//       ctx.drawImage(video, 0, 0, 640, 480);
+
+//       canvas.toBlob(
+//         (blob) => {
+//           if (!blob) return;
+//           const reader = new FileReader();
+//           reader.onloadend = () => {
+//             if (wsRef.current?.readyState === WebSocket.OPEN) {
+//               wsRef.current.send(
+//                 JSON.stringify({
+//                   type: "frame",
+//                   b64: reader.result,
+//                   ts: Date.now(),
+//                 })
+//               );
+//             }
+//           };
+//           reader.readAsDataURL(blob);
+//         },
+//         "image/jpeg",
+//         0.6
+//       );
+//     }
+
+//     animationId = requestAnimationFrame(loop);
+
+//     return () => {
+//       cancelAnimationFrame(animationId);
+//       wsRef.current?.close();
+//       videoRef.current?.srcObject?.getTracks().forEach((t) => t.stop());
+//     };
+//   }, []);
+
+//   // -----------------------------------------------------
+//   // FUNCTION: Đăng xuất
+//   // -----------------------------------------------------
+//   const handleLogout = () => {
+//     navigate("/login");
+//   };
+
+//   // -----------------------------------------------------
+//   // UI
+//   // -----------------------------------------------------
+//   return (
+//     <div className="min-h-screen bg-gray-100">
+//       {/* NAVBAR */}
+//       <nav className="backdrop-blur-xl bg-white/60 border-b border-indigo-200 shadow-sm sticky top-0 z-50">
+//         <div className="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
+//           <Link
+//             to="/student_dashboard"
+//             className="font-bold text-2xl text-indigo-600 flex items-center gap-2"
+//           >
+//             <GraduationCap size={28} /> Smart Exam
+//           </Link>
+//           <div className="flex items-center gap-6 text-gray-700 font-medium">
+//             <Link
+//               to="/student_dashboard"
+//               className="hover:text-indigo-600 transition"
+//             >
+//               Trang chủ
+//             </Link>
+//             <Link
+//               to="/student_violation_history"
+//               className="hover:text-indigo-600 transition"
+//             >
+//               Lịch sử vi phạm
+//             </Link>
+//             <button className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
+//               <LogOut size={18} /> Đăng xuất
+//             </button>
+//           </div>
+//         </div>
+//       </nav>
+
+//       {/* ---------------- PAGE CONTENT ---------------- */}
+//       <div className="p-6">
+//         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+//           {/* CAMERA PREVIEW */}
+//           <div className="flex justify-center">
+//             <div className="relative w-[640px] h-[480px] rounded-xl overflow-hidden shadow-lg border border-gray-300 bg-black">
+//               <video
+//                 ref={videoRef}
+//                 autoPlay
+//                 muted
+//                 playsInline
+//                 className="w-full h-full object-cover"
+//               />
+
+//               {annotatedFrame && (
+//                 <img
+//                   src={annotatedFrame}
+//                   className="absolute top-0 left-0 w-full h-full object-cover"
+//                 />
+//               )}
+
+//               <canvas ref={canvasRef} className="hidden" />
+//             </div>
+//           </div>
+
+//           {/* STATUS & DETECTIONS */}
+//           <div className="space-y-6">
+//             {/* STATUS */}
+//             <div className="bg-white rounded-xl shadow-md p-5 border border-gray-200">
+//               <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+//                 📡 Trạng thái hệ thống
+//               </h3>
+
+//               <div className="flex justify-between mb-3">
+//                 <span className="font-medium">WebSocket:</span>
+//                 <span
+//                   className={`px-3 py-1 rounded-full text-sm font-semibold ${
+//                     connected
+//                       ? "bg-green-100 text-green-700"
+//                       : "bg-red-100 text-red-700"
+//                   }`}
+//                 >
+//                   {connected ? "Đã kêt nối" : "Chưa kết nối"}
+//                 </span>
+//               </div>
+
+//               <p className="font-medium">Tỉ lệ vi phạm:</p>
+//               <div className="w-full bg-gray-200 h-3 rounded-full overflow-hidden">
+//                 <div
+//                   className={`h-3 ${
+//                     violationRate > 0.3
+//                       ? "bg-red-500"
+//                       : violationRate > 0.1
+//                       ? "bg-yellow-500"
+//                       : "bg-green-500"
+//                   }`}
+//                   style={{ width: `${violationRate * 100}%` }}
+//                 ></div>
+//               </div>
+
+//               <p
+//                 className={`mt-2 text-sm font-semibold ${
+//                   violationRate > 0 ? "text-red-600" : "text-green-600"
+//                 }`}
+//               >
+//                 {(violationRate * 100).toFixed(1)}%
+//               </p>
+//             </div>
+
+//             {/* DETECTION TABLE */}
+//             <div className="bg-white rounded-xl shadow-md p-5 border border-gray-200">
+//               <h3 className="text-lg font-bold mb-4">🎯 Kết quả nhận diện</h3>
+
+//               {detections.length > 0 ? (
+//                 <table className="w-full text-sm text-left border-collapse">
+//                   <thead>
+//                     <tr className="border-b bg-gray-50 text-gray-700">
+//                       <th className="py-2 px-2 w-10">#</th>
+//                       <th className="py-2 px-2">Label</th>
+//                       <th className="py-2 px-2">Score</th>
+//                     </tr>
+//                   </thead>
+//                   <tbody>
+//                     {detections.map((d, i) => (
+//                       <tr key={i} className="border-b hover:bg-gray-100">
+//                         <td className="py-2 px-2">{i + 1}</td>
+//                         <td className="py-2 px-2">
+//                           <span
+//                             className={`px-2 py-1 rounded-md text-xs font-semibold ${
+//                               d.label !== "normal"
+//                                 ? "bg-red-100 text-red-700"
+//                                 : "bg-green-100 text-green-700"
+//                             }`}
+//                           >
+//                             {d.label}
+//                           </span>
+//                         </td>
+//                         <td className="py-2 px-2">
+//                           {(d.score * 100).toFixed(1)}%
+//                         </td>
+//                       </tr>
+//                     ))}
+//                   </tbody>
+//                 </table>
+//               ) : (
+//                 <p className="text-gray-500 text-sm italic text-center py-2">
+//                   Chưa có dữ liệu nhận diện...
+//                 </p>
+//               )}
+//             </div>
+//           </div>
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
+
 import React, { useEffect, useRef, useState } from "react";
 import { useSelector } from "react-redux";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
 import { LogOut, GraduationCap } from "lucide-react";
+import { FaCamera } from "react-icons/fa";
 
 export default function StudentLive({ fps = 4 }) {
   const videoRef = useRef(null);
@@ -463,13 +732,14 @@ export default function StudentLive({ fps = 4 }) {
 
   const [params] = useSearchParams();
   const examId = params.get("exam");
+
   const { userInfo } = useSelector((state) => state.user);
   const verifyInfo = useSelector((state) => state.verify.verifyInfo);
 
   const navigate = useNavigate();
 
   // -----------------------------------------------------
-  // CAMERA + WEBSOCKET (GIỮ NGUYÊN LOGIC)
+  // CAMERA + WEBSOCKET
   // -----------------------------------------------------
   useEffect(() => {
     let animationId = null;
@@ -480,11 +750,14 @@ export default function StudentLive({ fps = 4 }) {
         video: { width: 640, height: 480 },
         audio: false,
       });
+
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
     }
+
     startCamera();
 
+    // WebSocket
     wsRef.current = new WebSocket(
       `ws://localhost:8000/ws/student?exam=${examId}&student=${userInfo.student_id}&class_id=${verifyInfo.classId}`
     );
@@ -498,7 +771,8 @@ export default function StudentLive({ fps = 4 }) {
       setDetections(data.detections || []);
       setViolationRate(data.violation_rate || 0);
 
-      if (Date.now() - lastAnnotatedUpdate.current > 300) {
+      // update annotated frame
+      if (Date.now() - lastAnnotatedUpdate.current > 200) {
         setAnnotatedFrame(data.frame_b64);
         lastAnnotatedUpdate.current = Date.now();
       }
@@ -506,8 +780,10 @@ export default function StudentLive({ fps = 4 }) {
 
     wsRef.current.onclose = () => setConnected(false);
 
+    // CAMERA LOOP
     function loop() {
       animationId = requestAnimationFrame(loop);
+
       const now = performance.now();
       if (now - sendCooldown.current < targetInterval) return;
       sendCooldown.current = now;
@@ -519,11 +795,14 @@ export default function StudentLive({ fps = 4 }) {
       const ctx = canvas.getContext("2d");
       canvas.width = 640;
       canvas.height = 480;
+
+      // 👉 MUST DRAW EXACTLY AS ORIGINAL (NO FLIP)
       ctx.drawImage(video, 0, 0, 640, 480);
 
       canvas.toBlob(
         (blob) => {
           if (!blob) return;
+
           const reader = new FileReader();
           reader.onloadend = () => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -552,65 +831,103 @@ export default function StudentLive({ fps = 4 }) {
     };
   }, []);
 
-  // -----------------------------------------------------
-  // FUNCTION: Đăng xuất
-  // -----------------------------------------------------
+  // Logout
   const handleLogout = () => {
     navigate("/login");
   };
 
-  // -----------------------------------------------------
-  // UI
-  // -----------------------------------------------------
   return (
     <div className="min-h-screen bg-gray-100">
       {/* NAVBAR */}
-      <nav className="backdrop-blur-xl bg-white/60 border-b border-indigo-200 shadow-sm sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
-          <Link
-            to="/student_dashboard"
-            className="font-bold text-2xl text-indigo-600 flex items-center gap-2"
-          >
-            <GraduationCap size={28} /> Smart Exam
-          </Link>
-          <div className="flex items-center gap-6 text-gray-700 font-medium">
-            <Link
-              to="/student_dashboard"
-              className="hover:text-indigo-600 transition"
-            >
-              Trang chủ
+      <nav className="backdrop-blur-xl bg-white/80 border-b border-white/20 shadow-lg sticky top-0 z-40">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+            <Link to="/student_dashboard" className="flex items-center gap-3">
+              <div className="p-2 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-lg">
+                <GraduationCap className="w-7 h-7 text-white" />
+              </div>
+              <span className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Smart Exam
+              </span>
             </Link>
-            <Link
-              to="/student_violation_history"
-              className="hover:text-indigo-600 transition"
-            >
-              Lịch sử vi phạm
-            </Link>
-            <button className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
-              <LogOut size={18} /> Đăng xuất
-            </button>
+
+            <div className="flex items-center gap-8">
+              <div className="hidden md:flex items-center gap-6 text-gray-700 font-medium">
+                <Link
+                  to="/student_dashboard"
+                  className="hover:text-indigo-600 transition"
+                >
+                  Trang chủ
+                </Link>
+                <Link
+                  to="/violation_history"
+                  className="hover:text-indigo-600 transition"
+                >
+                  Lịch sử vi phạm
+                </Link>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 px-4 py-2 bg-gray-100/80 rounded-full">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
+                    S
+                  </div>
+                  <span className="font-medium text-gray-800">Sinh viên</span>
+                </div>
+                <button className="flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-full shadow transition">
+                  <LogOut size={18} />
+                  Đăng xuất
+                </button>
+              </div>
+            </div>
+          </div>
+        </nav>
+
+      {/* HEADER + TRẠNG THÁI */}
+      <div className="mb-8 px-8 flex flex-wrap items-center justify-between gap-6">
+        <div className="flex-1 justify-between bg-white/20 backdrop-blur-md rounded-2xl px-2 py-2 border border-white/50 flex items-center gap-6">
+          <div className="flex justify-center items-center">
+            <div className="p-2 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl shadow-lg mr-4">
+              <FaCamera className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h1 className=" font-bold text-gray-800">
+                {verifyInfo?.examName} — {verifyInfo?.sessionName}
+              </h1>
+              <p className="text-gray-600 mt-1 font-mono">
+                Lớp:{" "}
+                <span className="font-semibold">{verifyInfo?.className}</span> |
+                Mã bài thi:{" "}
+                <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-lg font-mono">
+                  {examId}
+                </span>
+              </p>
+            </div>
           </div>
         </div>
-      </nav>
+      </div>
 
-      {/* ---------------- PAGE CONTENT ---------------- */}
+      {/* PAGE CONTENT */}
       <div className="p-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* CAMERA PREVIEW */}
+          {/* CAMERA & OVERLAY */}
           <div className="flex justify-center">
             <div className="relative w-[640px] h-[480px] rounded-xl overflow-hidden shadow-lg border border-gray-300 bg-black">
+              {/* VIDEO (UNMIRRORED) */}
               <video
                 ref={videoRef}
                 autoPlay
                 muted
                 playsInline
                 className="w-full h-full object-cover"
+                style={{ transform: "scaleX(1)" }} // FIX flip
               />
 
+              {/* ANNOTATED FRAME (OVERLAY) */}
               {annotatedFrame && (
                 <img
                   src={annotatedFrame}
-                  className="absolute top-0 left-0 w-full h-full object-cover"
+                  className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
+                  style={{ transform: "scaleX(1)" }} // ensure correct orientation
                 />
               )}
 
@@ -618,28 +935,26 @@ export default function StudentLive({ fps = 4 }) {
             </div>
           </div>
 
-          {/* STATUS & DETECTIONS */}
+          {/* STATUS + DETECTIONS */}
           <div className="space-y-6">
             {/* STATUS */}
             <div className="bg-white rounded-xl shadow-md p-5 border border-gray-200">
-              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                📡 Trạng thái hệ thống
-              </h3>
+              <h3 className="text-lg font-bold mb-4">📡 Trạng thái hệ thống</h3>
 
-              <div className="flex justify-between mb-3">
+              <div className="flex justify-between">
                 <span className="font-medium">WebSocket:</span>
                 <span
-                  className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                  className={`px-3 py-1 rounded-full ${
                     connected
                       ? "bg-green-100 text-green-700"
                       : "bg-red-100 text-red-700"
                   }`}
                 >
-                  {connected ? "Connected" : "Disconnected"}
+                  {connected ? "Đã kết nối" : "Chưa kết nối"}
                 </span>
               </div>
 
-              <p className="font-medium">Violation Rate:</p>
+              <p className="font-medium mt-3">Tỉ lệ vi phạm:</p>
               <div className="w-full bg-gray-200 h-3 rounded-full overflow-hidden">
                 <div
                   className={`h-3 ${
@@ -652,36 +967,28 @@ export default function StudentLive({ fps = 4 }) {
                   style={{ width: `${violationRate * 100}%` }}
                 ></div>
               </div>
-
-              <p
-                className={`mt-2 text-sm font-semibold ${
-                  violationRate > 0 ? "text-red-600" : "text-green-600"
-                }`}
-              >
-                {(violationRate * 100).toFixed(1)}%
-              </p>
             </div>
 
-            {/* DETECTION TABLE */}
+            {/* DETECTIONS */}
             <div className="bg-white rounded-xl shadow-md p-5 border border-gray-200">
               <h3 className="text-lg font-bold mb-4">🎯 Kết quả nhận diện</h3>
 
               {detections.length > 0 ? (
                 <table className="w-full text-sm text-left border-collapse">
                   <thead>
-                    <tr className="border-b bg-gray-50 text-gray-700">
-                      <th className="py-2 px-2 w-10">#</th>
-                      <th className="py-2 px-2">Label</th>
-                      <th className="py-2 px-2">Score</th>
+                    <tr className=" bg-gray-50 text-gray-700 mb-2">
+                      <th>#</th>
+                      <th>Hành vi</th>
+                      <th>Độ tin cậy</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="mt-4">
                     {detections.map((d, i) => (
-                      <tr key={i} className="border-b hover:bg-gray-100">
-                        <td className="py-2 px-2">{i + 1}</td>
-                        <td className="py-2 px-2">
+                      <tr key={i} className="">
+                        <td>{i + 1}</td>
+                        <td className="mt-2">
                           <span
-                            className={`px-2 py-1 rounded-md text-xs font-semibold ${
+                            className={`px-2 py-1 rounded-md text-xs ${
                               d.label !== "normal"
                                 ? "bg-red-100 text-red-700"
                                 : "bg-green-100 text-green-700"
@@ -690,17 +997,13 @@ export default function StudentLive({ fps = 4 }) {
                             {d.label}
                           </span>
                         </td>
-                        <td className="py-2 px-2">
-                          {(d.score * 100).toFixed(1)}%
-                        </td>
+                        <td>{(d.score * 100).toFixed(1)}%</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               ) : (
-                <p className="text-gray-500 text-sm italic text-center py-2">
-                  Chưa có dữ liệu nhận diện...
-                </p>
+                <p className="text-gray-500 italic">Chưa có dữ liệu...</p>
               )}
             </div>
           </div>

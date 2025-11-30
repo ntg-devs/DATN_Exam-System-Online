@@ -242,6 +242,43 @@ export async function getStudents(payload = {}) {
   }
 }
 
+export async function getStudentsNotInClass({ class_id }) {
+  try {
+    const res = await fetch(API_URL + "get-students-not-in-class", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ class_id }),
+    });
+
+    if (!res.ok) throw new Error("Không thể lấy danh sách sinh viên chưa thuộc lớp!");
+
+    const data = await res.json();
+    return data; // { success: true, students: [...] }
+  } catch (err) {
+    console.error("[❌] Lỗi getStudentsNotInClass:", err);
+    return { success: false, students: [] };
+  }
+}
+
+export async function getStudentsNotInSession(payload) {
+  try {
+    const res = await fetch(API_URL + "get-students-not-in-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error("Không thể lấy danh sách sinh viên chưa có trong ca thi!");
+
+    const data = await res.json();
+    return data; // { success: true, students: [...] }
+  } catch (err) {
+    console.error("[❌] Lỗi getStudentsNotInSession:", err);
+    return { success: false, students: [] };
+  }
+}
+
+
 /**
  * 🧩 Học sinh tham gia lớp học
  * @param {string} class_id
@@ -289,13 +326,28 @@ export async function createExam(payload) {
 }
 
 
-export async function getClassById(classId) {
+// export async function getClassById(classId) {
+//   try {
+//     const res = await fetch(API_URL + `get-class/${classId}`, {
+//       method: "GET",
+//       headers: {
+//         "Content-Type": "application/json",
+//       },
+//     });
+
+//     return await res.json();
+//   } catch (err) {
+//     console.error("Lỗi khi fetch class by ID:", err);
+//     return { success: false, class: null };
+//   }
+// }
+
+export async function getClassById(payload) {
   try {
-    const res = await fetch(API_URL + `get-class/${classId}`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
+    const res = await fetch(API_URL + `get-class`,{
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
 
     return await res.json();
@@ -340,5 +392,115 @@ export async function getStudentViolations(student_code) {
   } catch (err) {
     console.error("[❌] Lỗi getStudentViolations:", err);
     return { success: false, detail: err.message, violations: [] };
+  }
+}
+
+
+export async function addStudentsToExamSession(payload) {
+  try {
+    const res = await fetch(API_URL + "exam-session/add-students", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Thêm sinh viên vào ca thi thất bại!");
+
+    return data; // { success: true, session: { ... } }
+  } catch (err) {
+    console.error("[❌] Lỗi addStudentsToExamSession:", err);
+    return { success: false, detail: err.message };
+  }
+}
+
+
+export async function createExamSession(payload) {
+  try {
+    const res = await fetch(API_URL + "exam-session/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Tạo ca thi thất bại!");
+
+    return data; // { success: true, session: {...} }
+  } catch (err) {
+    console.error("[❌] Lỗi createExamSession:", err);
+    return { success: false, detail: err.message };
+  }
+}
+
+
+export async function getExamSessions(payload) {
+  try {
+    const res = await fetch(API_URL + "exam-session/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Lấy danh sách ca thi thất bại!");
+
+    return data; // { success: true, sessions: [...] }
+  } catch (err) {
+    console.error("[❌] Lỗi getExamSessions:", err);
+    return { success: false, detail: err.message, sessions: [] };
+  }
+}
+
+export async function getStudentsInSession(session_id) {
+  try {
+    const res = await fetch(API_URL + "get-students-in-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Không thể lấy danh sách sinh viên!");
+    return data; // { success: true, students: [...] }
+  } catch (err) {
+    console.error("[❌] Lỗi getStudentsInSession:", err);
+    return { success: false, students: [] };
+  }
+}
+
+
+export async function getExamSessionDetail(session_id) {
+  try {
+    const res = await fetch(API_URL + `exam-session/detail/${session_id}`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Lấy chi tiết ca thi thất bại!");
+
+    return data; // { success: true, session: {...} }
+  } catch (err) {
+    console.error("[❌] Lỗi getExamSessionDetail:", err);
+    return { success: false, detail: err.message };
+  }
+}
+
+export async function removeStudentFromSession({ session_id, student_id }) {
+  try {
+    const res = await fetch(API_URL + "exam-session/remove-student", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id, student_id }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xóa sinh viên khỏi ca thi thất bại!");
+
+    return data; // { success: true }
+  } catch (err) {
+    console.error("[❌] Lỗi removeStudentFromSession:", err);
+    return { success: false, detail: err.message };
   }
 }

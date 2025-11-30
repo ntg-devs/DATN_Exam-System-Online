@@ -1,6 +1,7 @@
 import { configureStore, combineReducers } from "@reduxjs/toolkit";
 import userReducer from "./slices/userSlice.js";
 import verifyReducer from "./slices/verifySlice.js";
+import notificationReducer from "./slices/notificationSlice.js";
 import {
   persistReducer,
   persistStore,
@@ -17,6 +18,7 @@ import storage from "redux-persist/lib/storage"; // lưu ở localStorage
 const rootReducer = combineReducers({
   user: userReducer,
   verify: verifyReducer,
+  notification: notificationReducer,
 });
 
 // Cấu hình redux-persist
