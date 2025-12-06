@@ -135,9 +135,8 @@ import {
   markAllRead,
   pushNotification,
 } from "../redux/slices/notificationSlice";
-import toast, { Toaster } from "react-hot-toast";
 
-const NotificationBell = ({ studentId }) => {
+const NotificationBell = ({ studentId, toast }) => {
   const [open, setOpen] = useState(false);
   const { latest, unreadCount } = useSelector((state) => state.notification);
   const dispatch = useDispatch();
@@ -164,10 +163,10 @@ const NotificationBell = ({ studentId }) => {
     return (
       <div
         key={noti._id || Math.random()}
-        className="flex items-start gap-3 p-4 border-b hover:bg-gray-50 transition-all cursor-pointer"
+        className="flex items-start gap-3 p-4  hover:bg-yellow-100  transition-all cursor-pointer"
       >
         {/* ICON */}
-        <div className="w-10 h-10 flex items-center justify-center rounded-full bg-blue-100 text-blue-600 text-lg shadow-sm">
+        <div className="w-10 h-10 flex items-center justify-center rounded-full bg-yellow-300 text-blue-600 text-lg shadow-sm">
           🔔
         </div>
 
@@ -214,6 +213,8 @@ const NotificationBell = ({ studentId }) => {
 
     // WebSocket ca thi
     const wsExams = new WebSocket("ws://localhost:8000/ws/exams");
+    // const wsExams = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/exams");
+    // const wsExams = new WebSocket("wss://103.142.24.110:8000/ws/exams");
     wsExamsRef.current = wsExams;
 
     wsExams.onmessage = (ev) => {
@@ -248,7 +249,6 @@ const NotificationBell = ({ studentId }) => {
 
   return (
     <div className="relative">
-      <Toaster />
       {/* Bell Icon */}
       <button
         onClick={toggleDropdown}
@@ -265,7 +265,7 @@ const NotificationBell = ({ studentId }) => {
       {/* Dropdown */}
       {open && (
         <>
-          <div className="absolute right-0 mt-2 w-96 bg-white shadow-lg rounded-lg z-50 max-h-80 overflow-y-auto border">
+          <div className="absolute right-0 mt-2 w-96 bg-white shadow-lg rounded-lg z-50 max-h-80 overflow-y-auto border-[1px] border-solid border-gray-600">
             {latest.length === 0 ? (
               <div className="p-4 text-gray-500">Không có thông báo mới</div>
             ) : (

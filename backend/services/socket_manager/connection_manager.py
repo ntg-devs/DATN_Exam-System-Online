@@ -15,11 +15,23 @@ class ConnectionManager:
     #     print(f"[🎓] {student} joined exam {exam}")
 
     # Chỉnh lại lần 2 theo bổ sung reatime cho nhận diện khuôn mặt kèm hành vi
-    async def connect_student(self, exam: str, student: str, websocket: WebSocket):
+    # async def connect_student(self, exam: str, student: str, websocket: WebSocket):
+    #     if exam not in self.students:
+    #         self.students[exam] = {}
+    #     self.students[exam][student] = websocket
+    #     print(f"[🎓] {student} joined exam {exam}")
+
+    async def connect_student(self, exam: str, session: str, student: str, websocket: WebSocket):
+        # Khởi tạo exam nếu chưa có
         if exam not in self.students:
             self.students[exam] = {}
-        self.students[exam][student] = websocket
-        print(f"[🎓] {student} joined exam {exam}")
+        # Khởi tạo session nếu chưa có
+        if session not in self.students[exam]:
+            self.students[exam][session] = {}
+        # Gán WebSocket
+        self.students[exam][session][student] = websocket
+        print(f"[🎓] {student} joined exam {exam} - session {session}")
+
 
     async def disconnect_student(self, exam: str, student: str):
         if exam in self.students and student in self.students[exam]:

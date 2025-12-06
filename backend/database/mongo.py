@@ -1,6 +1,7 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 
 MONGO_URI = "mongodb://username:password@localhost:27017"
+# MONGO_URI = "mongodb://127.0.0.1:27017"
 DB_NAME = "exam_system"
 
 client = AsyncIOMotorClient(MONGO_URI)
@@ -11,3 +12,6 @@ users_collection = db["users"]
 classes_collection = db["classes"]
 violates_collection = db["violates"]
 exam_sessions_collection = db["exam_sessions"]
+
+# Trên máy Windows PowerShell hoặc CMD
+

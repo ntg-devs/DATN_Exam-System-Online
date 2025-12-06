@@ -721,7 +721,7 @@ export default function ClassDashboard() {
             >
               Lịch sử vi phạm
             </Link>
-            <button className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
+            <button onClick={() => {navigate("/")}} className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
               <LogOut size={18} /> Đăng xuất
             </button>
           </div>

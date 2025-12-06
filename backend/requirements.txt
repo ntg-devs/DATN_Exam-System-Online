@@ -1,0 +1,28 @@
+# --- Web Framework & API ---
+fastapi
+uvicorn[standard]
+python-multipart # Cần cho xử lý Form và UploadFile
+
+# --- Data Science & Computer Vision ---
+numpy
+Pillow
+opencv-python
+
+# --- Machine Learning / Deep Learning ---
+torch
+torchvision
+# Bạn nên cài đặt phiên bản PyTorch dựa trên môi trường GPU/CPU của VPS.
+# Nếu là CPU, bạn có thể cài đặt đơn giản qua pip.
+# Nếu là GPU, hãy kiểm tra trang web PyTorch để có lệnh cài đặt chính xác.
+
+# --- Face Recognition & Biometric ---
+facenet-pytorch
+scikit-learn # Được sử dụng cho normalize và cosine_similarity
+# Nếu dùng GPU, hãy đảm bảo các thư viện này được cài đặt sau khi có PyTorch/CUDA
+
+# --- Database & Authentication ---
+motor # AsyncIOMotorClient cho MongoDB
+passlib[bcrypt] # Hashing mật khẩu
+
+# --- Other Utilities ---
+bson # Dùng cho ObjectId của MongoDB (thường là dependency của Motor nhưng nên liệt kê)

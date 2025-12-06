@@ -154,6 +154,85 @@
 #     # enroll_from_video("student1.mp4", "student1")
 #     run_realtime_recognition(video_source=0)
 
+# Đang chạy
+# import os
+# import cv2
+# import pickle
+# import torch
+# import numpy as np
+# from PIL import Image
+# from facenet_pytorch import MTCNN, InceptionResnetV1
+# from sklearn.preprocessing import normalize
+
+# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# DB_PATH = os.path.join(os.path.dirname(__file__), "database2.pkl")
+
+# # Khởi tạo MTCNN & ResNet
+# mtcnn = MTCNN(keep_all=True, min_face_size=40, device=DEVICE)
+# resnet = InceptionResnetV1(pretrained="vggface2").eval().to(DEVICE)
+
+
+# def extract_embedding(face_tensor):
+#     with torch.no_grad():
+#         emb = resnet(face_tensor.unsqueeze(0).to(DEVICE)).cpu().numpy().squeeze()
+#     emb = normalize(emb.reshape(1, -1))[0]
+#     return emb
+
+
+# def enroll_from_video(video_path, student_id, min_frames=5):
+#     cap = cv2.VideoCapture(video_path)
+#     embeddings = []
+#     frame_idx = 0
+
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+
+#         if frame_idx % 5 == 0:  # Lấy 1 frame mỗi 5 frame
+#             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#             pil = Image.fromarray(rgb)
+
+#             # Detect face & boxes
+#             boxes, probs = mtcnn.detect(pil)
+#             faces = mtcnn(pil)
+
+#             if boxes is None or faces is None:
+#                 frame_idx += 1
+#                 continue
+
+#             # Đồng bộ index: chọn face lớn nhất theo diện tích box
+#             areas = [(b[2]-b[0])*(b[3]-b[1]) for b in boxes]
+#             idx = int(np.argmax(areas))
+#             if isinstance(faces, list):
+#                 faces = torch.stack(faces)
+
+#             face_tensor = faces[idx]
+
+#             # Chỉ enroll frame có confidence cao
+#             if probs is not None and probs[idx] < 0.90:
+#                 frame_idx += 1
+#                 continue
+
+#             embeddings.append(extract_embedding(face_tensor))
+
+#         frame_idx += 1
+
+#     cap.release()
+
+#     if len(embeddings) < min_frames:
+#         raise RuntimeError("Quá ít frame có mặt, vui lòng quay lại video rõ khuôn mặt!")
+
+#     # Load hoặc tạo database
+#     if os.path.exists(DB_PATH):
+#         db = pickle.load(open(DB_PATH, "rb"))
+#     else:
+#         db = {}
+
+#     db[student_id] = embeddings
+#     pickle.dump(db, open(DB_PATH, "wb"))
+#     return len(embeddings)
+
 
 import os
 import cv2
@@ -172,6 +251,25 @@ mtcnn = MTCNN(keep_all=True, min_face_size=40, device=DEVICE)
 resnet = InceptionResnetV1(pretrained="vggface2").eval().to(DEVICE)
 
 
+# ========== Hàm ALIGN KHUÔN MẶT ========== #
+def align_face(image, landmarks):
+    # landmarks dạng [5 điểm mắt trái, mắt phải, mũi, miệng trái, miệng phải]
+    left_eye = landmarks[0]
+    right_eye = landmarks[1]
+
+    dx = right_eye[0] - left_eye[0]
+    dy = right_eye[1] - left_eye[1]
+    angle = np.degrees(np.arctan2(dy, dx))
+
+    # rotate image theo góc mắt
+    center = tuple(np.mean([left_eye, right_eye], axis=0))
+    rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+
+    aligned = cv2.warpAffine(image, rot_mat, (image.shape[1], image.shape[0]))
+    return aligned
+
+
+# ========== TÍNH EMBEDDING ========== #
 def extract_embedding(face_tensor):
     with torch.no_grad():
         emb = resnet(face_tensor.unsqueeze(0).to(DEVICE)).cpu().numpy().squeeze()
@@ -179,7 +277,19 @@ def extract_embedding(face_tensor):
     return emb
 
 
-def enroll_from_video(video_path, student_id, min_frames=5):
+# ========== KIỂM TRA CHẤT LƯỢNG FRAME ========== #
+def is_good_frame(gray):
+    # Độ sắc nét (Laplacian variance)
+    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    # Độ sáng
+    brightness = np.mean(gray)
+
+    return sharpness > 50 and 80 < brightness < 200
+
+
+# ========== ENROLL VIDEO ========== #
+def enroll_from_video(video_path, student_id, min_frames=30):
     cap = cv2.VideoCapture(video_path)
     embeddings = []
     frame_idx = 0
@@ -189,46 +299,79 @@ def enroll_from_video(video_path, student_id, min_frames=5):
         if not ret:
             break
 
-        if frame_idx % 5 == 0:  # Lấy 1 frame mỗi 5 frame
+        if frame_idx % 5 == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Reject frame kém chất lượng
+            if not is_good_frame(gray):
+                frame_idx += 1
+                continue
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil = Image.fromarray(rgb)
 
-            # Detect face & boxes
-            boxes, probs = mtcnn.detect(pil)
-            faces = mtcnn(pil)
+            boxes, probs, landmarks = mtcnn.detect(pil, landmarks=True)
 
-            if boxes is None or faces is None:
+            if boxes is None or probs is None or landmarks is None:
                 frame_idx += 1
                 continue
 
-            # Đồng bộ index: chọn face lớn nhất theo diện tích box
+            # Chọn mặt lớn nhất
             areas = [(b[2]-b[0])*(b[3]-b[1]) for b in boxes]
             idx = int(np.argmax(areas))
-            if isinstance(faces, list):
-                faces = torch.stack(faces)
 
-            face_tensor = faces[idx]
-
-            # Chỉ enroll frame có confidence cao
-            if probs is not None and probs[idx] < 0.90:
+            if probs[idx] < 0.95:  # nâng threshold lên
                 frame_idx += 1
                 continue
 
-            embeddings.append(extract_embedding(face_tensor))
+            # align face
+            aligned = align_face(rgb, landmarks[idx])
+
+            pil_aligned = Image.fromarray(aligned)
+            face_tensor = mtcnn(pil_aligned)
+
+            if face_tensor is None:
+                frame_idx += 1
+                continue
+
+            emb = extract_embedding(face_tensor)
+            embeddings.append(emb)
 
         frame_idx += 1
 
     cap.release()
 
     if len(embeddings) < min_frames:
-        raise RuntimeError("Quá ít frame có mặt, vui lòng quay lại video rõ khuôn mặt!")
+        raise RuntimeError("Không đủ frame chất lượng tốt để enroll!")
 
-    # Load hoặc tạo database
+    # ======== LOẠI OUTLIER ========== #
+    arr = np.array(embeddings)
+    mean = arr.mean(axis=0)
+    std = arr.std(axis=0)
+
+    z_scores = np.abs((arr - mean) / (std + 1e-8))
+    mask = (z_scores < 2).all(axis=1)
+    cleaned_embeddings = arr[mask]
+
+    # Nếu clean quá nhiều thì dùng lại gốc
+    if len(cleaned_embeddings) >= min_frames:
+        arr = cleaned_embeddings
+
+    # ======== TÍNH MEAN + STD EMBEDDING ========== #
+    final_mean = arr.mean(axis=0)
+    final_std = arr.std(axis=0)
+
+    # Lưu vào database
     if os.path.exists(DB_PATH):
         db = pickle.load(open(DB_PATH, "rb"))
     else:
         db = {}
 
-    db[student_id] = embeddings
+    db[student_id] = {
+        "mean": final_mean,
+        "std": final_std,
+        "raw": arr.tolist()
+    }
+
     pickle.dump(db, open(DB_PATH, "wb"))
-    return len(embeddings)
+    return len(arr)

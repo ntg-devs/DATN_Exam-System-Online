@@ -48,6 +48,8 @@ export default function Dashboard() {
     if (wsRef.current) return;
 
     wsRef.current = new WebSocket("ws://localhost:8000/ws/exams");
+    // wsRef.current = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/exams");
+    // wsRef.current = new WebSocket("wss://103.142.24.110:8000/ws/exams");
 
     wsRef.current.onopen = () => {
       console.log("✅ WS connected exam realtime");

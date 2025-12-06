@@ -2308,6 +2308,8 @@ export default function TeacherLive() {
   useEffect(() => {
     getListStudentsFromExamSession();
     const ws = new WebSocket(`ws://localhost:8000/ws/teacher?exam=${examId}`);
+    // const ws = new WebSocket(`wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/teacher?exam=${examId}`);
+    // const ws = new WebSocket(`wss://103.142.24.110:8000/ws/teacher?exam=${examId}`);
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => setWsConnected(false);
     ws.onmessage = (ev) => {

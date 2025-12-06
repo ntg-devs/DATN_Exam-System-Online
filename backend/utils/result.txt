@@ -1,0 +1,9 @@
+🔥 Best threshold = 0.5879 with Accuracy = 0.9980
+
+===== MODEL EVALUATION =====
+Accuracy:   0.9980
+Precision:  0.8799
+Recall:     0.7078
+F1-score:   0.7845
+FAR:        0.0005
+FRR:        0.2922

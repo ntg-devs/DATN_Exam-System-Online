@@ -526,20 +526,298 @@ behavior_service2 = BehaviorDetectionService("models/fasterrcnn_final.pth")
 
 # Nhận diện hành vi sinh viên có bổ sung nhận diện khuôn mặt realtime 
 
+# # ===========================
+# # CONFIG
+# # ===========================
+# FACE_SIMILARITY_THRESHOLD = 0.65
+# FACE_CHECK_INTERVAL_MS = 500
+# MULTI_FACE_VIOLATION_MIN = 2
+# UNKNOWN_FACE_PERSIST_MS = 3000
+
+# # ===========================
+# # HELPER FUNCTIONS
+# # ===========================
+# def _detect_faces_pil(pil_img):
+#     boxes, probs = mtcnn.detect(pil_img)
+#     faces_tensor = mtcnn(pil_img)  # list of tensors or stacked
+#     return boxes, probs, faces_tensor
+
+# def _compute_face_results_from_tensors(faces_tensor):
+#     if isinstance(faces_tensor, list):
+#         if len(faces_tensor) == 0:
+#             return []
+#         faces_stack = torch.stack(faces_tensor)
+#     else:
+#         faces_stack = faces_tensor
+
+#     results = []
+#     for i in range(faces_stack.shape[0]):
+#         ft = faces_stack[i]
+#         emb = extract_embedding(ft)  # 1D np array
+#         results.append(emb)
+#     return results
+
+# def _find_best_label_for_emb(emb, db, threshold=FACE_SIMILARITY_THRESHOLD):
+#     best_score = -1.0
+#     best_label = "unknown"
+#     for person_id, embs in db.items():
+#         sc = cosine_similarity([emb], embs).max()
+#         if sc > best_score:
+#             best_score = float(sc)
+#             if sc >= threshold:
+#                 best_label = person_id
+#     return best_label, float(best_score)
+
+# # ===========================
+# # WEBSOCKET HANDLER
+# # ===========================
+# violation_state = {}
+
+# @app.websocket("/ws/student")
+# async def ws_student(websocket: WebSocket):
+#     from fastapi import WebSocketDisconnect
+#     await websocket.accept()
+
+#     exam = websocket.query_params.get("exam")
+#     student = websocket.query_params.get("student")
+#     class_id = websocket.query_params.get("class_id")
+#     student_info = await users_collection.find_one({"_id": student})
+
+#     await manager.connect_student(exam, student, websocket)
+#     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
+
+#     violation_state[student] = {
+#         "last_behavior": None,
+#         "start_ts": None,
+#         "reported": False,
+#         "last_face_check_ts": 0,
+#         "unknown_start_ts": None,
+#         "unknown_reported": False,
+#     }
+
+#     loop = asyncio.get_running_loop()
+
+#     try:
+#         while True:
+#             raw_msg = await websocket.receive_text()
+#             try:
+#                 data = json.loads(raw_msg)
+#             except:
+#                 continue
+
+#             if data.get("type") != "frame":
+#                 continue
+
+#             ts = int(data["ts"])
+#             b64 = data["b64"].split(",")[1]
+#             img_bytes = base64.b64decode(b64)
+#             np_arr = np.frombuffer(img_bytes, np.uint8)
+#             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+#             # -------------------------
+#             # 1) BEHAVIOR DETECTION
+#             # -------------------------
+#             detections = behavior_service2.predict(frame, score_thresh=0.4)
+#             abnormal = [d for d in detections if d["label"] != "normal"]
+#             violation_rate = len(abnormal) / len(detections) if detections else 0
+#             top = max(abnormal, key=lambda d: d["score"]) if abnormal else {"label": "normal", "score": 1.0}
+#             behavior = top["label"]
+#             score = top["score"]
+
+#             track = violation_state[student]
+#             if behavior != "normal" and score > 0.5:
+#                 if track["last_behavior"] != behavior:
+#                     track["last_behavior"] = behavior
+#                     track["start_ts"] = ts
+#                     track["reported"] = False
+#                 else:
+#                     duration = ts - (track["start_ts"] or ts)
+#                     if duration >= 3000 and not track["reported"]:
+#                         track["reported"] = True
+#                         draw_frame = behavior_service2.draw_detections(frame, detections)
+#                         _, buffer = cv2.imencode(".jpg", draw_frame)
+#                         evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+#                         await violates_collection.insert_one({
+#                             "student": student,
+#                             "exam_id": exam,
+#                             "class_id": class_id,
+#                             "type": "behavior",
+#                             "behavior": behavior,
+#                             "score": score,
+#                             "start_ts": track["start_ts"],
+#                             "end_ts": ts,
+#                             "duration_ms": duration,
+#                             "timestamp": datetime.utcnow(),
+#                             "evidence": evidence_b64,
+#                         })
+#                         await manager.broadcast_teachers(exam, {
+#                             "type": "violation_detected",
+#                             "student": student,
+#                             "behavior": behavior,
+#                             "duration": duration,
+#                             "timestamp": ts,
+#                             "evidence": evidence_b64,
+#                         })
+#             else:
+#                 track["last_behavior"] = None
+#                 track["start_ts"] = None
+#                 track["reported"] = False
+
+#             # -------------------------
+#             # 2) FACE CHECK
+#             # -------------------------
+#             now_ms = ts
+#             do_face_check = (now_ms - track["last_face_check_ts"]) >= FACE_CHECK_INTERVAL_MS
+#             face_results = []
+#             face_violation_happened = False
+
+#             if do_face_check:
+#                 track["last_face_check_ts"] = now_ms
+#                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+#                 try:
+#                     boxes, probs, faces_tensor = await loop.run_in_executor(None, _detect_faces_pil, pil_img)
+#                 except:
+#                     boxes = None
+#                     faces_tensor = None
+
+#                 if boxes is None or len(boxes) == 0:
+#                     track["unknown_start_ts"] = None
+#                     track["unknown_reported"] = False
+#                 else:
+#                     try:
+#                         embs = await loop.run_in_executor(None, _compute_face_results_from_tensors, faces_tensor)
+#                     except:
+#                         embs = []
+
+#                     detected_faces = []
+#                     for idx, box in enumerate(boxes):
+#                         x1, y1, x2, y2 = map(int, box)
+#                         emb = embs[idx] if idx < len(embs) else None
+#                         if emb is None:
+#                             label = "unknown"
+#                             sim = 0.0
+#                         else:
+#                             label, sim = _find_best_label_for_emb(emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD)
+
+#                         detected_faces.append({
+#                             "box": [x1, y1, x2, y2],
+#                             "label": label,
+#                             "similarity": sim,
+#                         })
+
+#                     face_results = detected_faces
+
+#                     # --- Face Violation Rules ---
+#                     if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
+#                         face_violation_happened = True
+#                         reason = "multi_face"
+#                     elif len(detected_faces) == 1:
+#                         f = detected_faces[0]
+#                         if f["label"] == "unknown" or f["label"] != student:
+#                             if f["label"] == "unknown":
+#                                 if track["unknown_start_ts"] is None:
+#                                     track["unknown_start_ts"] = now_ms
+#                                 else:
+#                                     duration_unknown = now_ms - track["unknown_start_ts"]
+#                                     if duration_unknown >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
+#                                         track["unknown_reported"] = True
+#                                         face_violation_happened = True
+#                                         reason = "unknown_face_persistent"
+#                             else:
+#                                 face_violation_happened = True
+#                                 reason = "mismatch_face"
+#                         else:
+#                             track["unknown_start_ts"] = None
+#                             track["unknown_reported"] = False
+
+#                     if face_violation_happened:
+#                         draw = frame.copy()
+#                         for f in detected_faces:
+#                             x1, y1, x2, y2 = f["box"]
+#                             color = (0,255,0) if f["label"] == student else (0,0,255)
+#                             cv2.rectangle(draw, (x1,y1), (x2,y2), color, 2)
+#                             text = f"{f['label']}:{f['similarity']:.2f}"
+#                             cv2.putText(draw, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+#                         _, buffer = cv2.imencode(".jpg", draw)
+#                         evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+
+#                         await violates_collection.insert_one({
+#                             "student": student,
+#                             "exam_id": exam,
+#                             "class_id": class_id,
+#                             "type": "face",
+#                             "reason": reason,
+#                             "faces": detected_faces,
+#                             "timestamp": datetime.utcnow(),
+#                             "evidence": evidence_b64,
+#                         })
+
+#                         await manager.broadcast_teachers(exam, {
+#                             "type": "face_alert",
+#                             "student": student,
+#                             "reason": reason,
+#                             "faces": detected_faces,
+#                             "timestamp": now_ms,
+#                             "evidence": evidence_b64,
+#                         })
+
+#             # -------------------------
+#             # 3) DRAW FINAL FRAME (behavior + face overlay)
+#             # -------------------------
+#             draw_frame = behavior_service2.draw_detections(frame, detections)
+#             for f in face_results:
+#                 x1, y1, x2, y2 = f["box"]
+#                 color = (0,255,0) if f["label"] == student else (0,0,255)
+#                 cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
+#                 text = f"{f['label']}:{f['similarity']:.2f}"
+#                 cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+#             _, buffer = cv2.imencode(".jpg", draw_frame)
+#             frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+
+#             # Gửi client và teacher
+#             await websocket.send_json({
+#                 "type": "self_assessment",
+#                 "detections": detections,
+#                 "violation_rate": violation_rate,
+#                 "frame_b64": frame_b64,
+#                 "ts": ts,
+#                 "faces": face_results,
+#             })
+
+#             await manager.broadcast_teachers(exam, {
+#                 "type": "student_frame",
+#                 "student": student,
+#                 "detections": detections,
+#                 "violation_rate": violation_rate,
+#                 "frame_b64": frame_b64,
+#                 "ts": ts,
+#                 "faces": face_results,
+#             })
+
+#     except WebSocketDisconnect:
+#         violation_state.pop(student, None)
+#         await manager.disconnect_student(exam, student)
+#         print(f"🔴 Student {student} disconnected")
+
+# Final optimizations
 # ===========================
 # CONFIG
 # ===========================
 FACE_SIMILARITY_THRESHOLD = 0.65
-FACE_CHECK_INTERVAL_MS = 500
+FACE_CHECK_INTERVAL_MS = 30_000  # nhận diện khuôn mặt mỗi 30s
 MULTI_FACE_VIOLATION_MIN = 2
-UNKNOWN_FACE_PERSIST_MS = 3000
+UNKNOWN_FACE_PERSIST_MS = 3_000
+BEHAVIOR_VIOLATION_DURATION_MS = 5_000  # hành vi kéo dài 5s → vi phạm
 
 # ===========================
 # HELPER FUNCTIONS
 # ===========================
 def _detect_faces_pil(pil_img):
     boxes, probs = mtcnn.detect(pil_img)
-    faces_tensor = mtcnn(pil_img)  # list of tensors or stacked
+    faces_tensor = mtcnn(pil_img)
     return boxes, probs, faces_tensor
 
 def _compute_face_results_from_tensors(faces_tensor):
@@ -553,7 +831,7 @@ def _compute_face_results_from_tensors(faces_tensor):
     results = []
     for i in range(faces_stack.shape[0]):
         ft = faces_stack[i]
-        emb = extract_embedding(ft)  # 1D np array
+        emb = extract_embedding(ft)
         results.append(emb)
     return results
 
@@ -579,17 +857,19 @@ async def ws_student(websocket: WebSocket):
     await websocket.accept()
 
     exam = websocket.query_params.get("exam")
+    session = websocket.query_params.get("session")
+    print("aaa", session)
     student = websocket.query_params.get("student")
     class_id = websocket.query_params.get("class_id")
     student_info = await users_collection.find_one({"_id": student})
 
-    await manager.connect_student(exam, student, websocket)
+    await manager.connect_student(exam, session, student, websocket)
     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
 
     violation_state[student] = {
         "last_behavior": None,
-        "start_ts": None,
-        "reported": False,
+        "behavior_start_ts": None,
+        "behavior_reported": False,
         "last_face_check_ts": 0,
         "unknown_start_ts": None,
         "unknown_reported": False,
@@ -614,29 +894,31 @@ async def ws_student(websocket: WebSocket):
             np_arr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
+            track = violation_state[student]
+            now_ms = ts
+
             # -------------------------
-            # 1) BEHAVIOR DETECTION
+            # 1) BEHAVIOR DETECTION (liên tục)
             # -------------------------
             detections = behavior_service2.predict(frame, score_thresh=0.4)
             abnormal = [d for d in detections if d["label"] != "normal"]
-            violation_rate = len(abnormal) / len(detections) if detections else 0
             top = max(abnormal, key=lambda d: d["score"]) if abnormal else {"label": "normal", "score": 1.0}
             behavior = top["label"]
             score = top["score"]
 
-            track = violation_state[student]
             if behavior != "normal" and score > 0.5:
                 if track["last_behavior"] != behavior:
                     track["last_behavior"] = behavior
-                    track["start_ts"] = ts
-                    track["reported"] = False
+                    track["behavior_start_ts"] = now_ms
+                    track["behavior_reported"] = False
                 else:
-                    duration = ts - (track["start_ts"] or ts)
-                    if duration >= 3000 and not track["reported"]:
-                        track["reported"] = True
+                    duration = now_ms - (track["behavior_start_ts"] or now_ms)
+                    if duration >= BEHAVIOR_VIOLATION_DURATION_MS and not track["behavior_reported"]:
+                        track["behavior_reported"] = True
                         draw_frame = behavior_service2.draw_detections(frame, detections)
                         _, buffer = cv2.imencode(".jpg", draw_frame)
                         evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+
                         await violates_collection.insert_one({
                             "student": student,
                             "exam_id": exam,
@@ -644,8 +926,8 @@ async def ws_student(websocket: WebSocket):
                             "type": "behavior",
                             "behavior": behavior,
                             "score": score,
-                            "start_ts": track["start_ts"],
-                            "end_ts": ts,
+                            "start_ts": track["behavior_start_ts"],
+                            "end_ts": now_ms,
                             "duration_ms": duration,
                             "timestamp": datetime.utcnow(),
                             "evidence": evidence_b64,
@@ -655,23 +937,152 @@ async def ws_student(websocket: WebSocket):
                             "student": student,
                             "behavior": behavior,
                             "duration": duration,
-                            "timestamp": ts,
+                            "timestamp": now_ms,
                             "evidence": evidence_b64,
                         })
             else:
                 track["last_behavior"] = None
-                track["start_ts"] = None
-                track["reported"] = False
+                track["behavior_start_ts"] = None
+                track["behavior_reported"] = False
+
+            # # -------------------------
+            # # 2) FACE CHECK (mỗi 30s)
+            # # -------------------------
+            # if now_ms - track["last_face_check_ts"] >= FACE_CHECK_INTERVAL_MS:
+            #     track["last_face_check_ts"] = now_ms
+            #     pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+            #     try:
+            #         boxes, probs, faces_tensor = await loop.run_in_executor(None, _detect_faces_pil, pil_img)
+            #     except:
+            #         boxes = None
+            #         faces_tensor = None
+
+            #     face_results = []
+            #     face_violation_happened = False
+
+            #     if boxes is None or len(boxes) == 0:
+            #         track["unknown_start_ts"] = None
+            #         track["unknown_reported"] = False
+            #     else:
+            #         try:
+            #             embs = await loop.run_in_executor(None, _compute_face_results_from_tensors, faces_tensor)
+            #         except:
+            #             embs = []
+
+            #         detected_faces = []
+            #         for idx, box in enumerate(boxes):
+            #             x1, y1, x2, y2 = map(int, box)
+            #             emb = embs[idx] if idx < len(embs) else None
+            #             if emb is None:
+            #                 label = "unknown"
+            #                 sim = 0.0
+            #             else:
+            #                 label, sim = _find_best_label_for_emb(emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD)
+
+            #             detected_faces.append({
+            #                 "box": [x1, y1, x2, y2],
+            #                 "label": label,
+            #                 "similarity": sim,
+            #             })
+
+            #         face_results = detected_faces
+
+            #         # --- Face Violation Rules ---
+            #         if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
+            #             face_violation_happened = True
+            #             reason = "multi_face"
+            #         elif len(detected_faces) == 1:
+            #             f = detected_faces[0]
+            #             if f["label"] == "unknown" or f["label"] != student:
+            #                 if f["label"] == "unknown":
+            #                     if track["unknown_start_ts"] is None:
+            #                         track["unknown_start_ts"] = now_ms
+            #                     else:
+            #                         duration_unknown = now_ms - track["unknown_start_ts"]
+            #                         if duration_unknown >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
+            #                             track["unknown_reported"] = True
+            #                             face_violation_happened = True
+            #                             reason = "unknown_face_persistent"
+            #                 else:
+            #                     face_violation_happened = True
+            #                     reason = "mismatch_face"
+            #             else:
+            #                 track["unknown_start_ts"] = None
+            #                 track["unknown_reported"] = False
+
+            #         if face_violation_happened:
+            #             draw = frame.copy()
+            #             for f in detected_faces:
+            #                 x1, y1, x2, y2 = f["box"]
+            #                 color = (0,255,0) if f["label"] == student else (0,0,255)
+            #                 cv2.rectangle(draw, (x1,y1), (x2,y2), color, 2)
+            #                 text = f"{f['label']}:{f['similarity']:.2f}"
+            #                 cv2.putText(draw, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            #             _, buffer = cv2.imencode(".jpg", draw)
+            #             evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+
+            #             await violates_collection.insert_one({
+            #                 "student": student,
+            #                 "exam_id": exam,
+            #                 "class_id": class_id,
+            #                 "type": "face",
+            #                 "reason": reason,
+            #                 "faces": detected_faces,
+            #                 "timestamp": datetime.utcnow(),
+            #                 "evidence": evidence_b64,
+            #             })
+
+            #             await manager.broadcast_teachers(exam, {
+            #                 "type": "face_alert",
+            #                 "student": student,
+            #                 "reason": reason,
+            #                 "faces": detected_faces,
+            #                 "timestamp": now_ms,
+            #                 "evidence": evidence_b64,
+            #             })
+
+            # # -------------------------
+            # # 3) DRAW FINAL FRAME
+            # # -------------------------
+            # draw_frame = behavior_service2.draw_detections(frame, detections)
+            # for f in face_results:
+            #     x1, y1, x2, y2 = f["box"]
+            #     color = (0,255,0) if f["label"] == student else (0,0,255)
+            #     cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
+            #     text = f"{f['label']}:{f['similarity']:.2f}"
+            #     cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            # _, buffer = cv2.imencode(".jpg", draw_frame)
+            # frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+
+            # # Gửi client và teacher
+            # await websocket.send_json({
+            #     "type": "self_assessment",
+            #     "detections": detections,
+            #     "frame_b64": frame_b64,
+            #     "ts": ts,
+            #     "faces": face_results,
+            # })
+
+            # await manager.broadcast_teachers(exam, {
+            #     "type": "student_frame",
+            #     "student": student,
+            #     "detections": detections,
+            #     "frame_b64": frame_b64,
+            #     "ts": ts,
+            #     "faces": face_results,
+            # })
 
             # -------------------------
-            # 2) FACE CHECK
+            # 2) FACE CHECK (mỗi 30s)
             # -------------------------
-            now_ms = ts
-            do_face_check = (now_ms - track["last_face_check_ts"]) >= FACE_CHECK_INTERVAL_MS
-            face_results = []
-            face_violation_happened = False
+            face_results = []          # <--- reset mỗi frame để tránh giữ giá trị cũ
+            ran_face_check = False     # <--- đánh dấu xem frame này có chạy 30s hay không
 
-            if do_face_check:
+            if now_ms - track["last_face_check_ts"] >= FACE_CHECK_INTERVAL_MS:
+                ran_face_check = True
                 track["last_face_check_ts"] = now_ms
                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
@@ -681,9 +1092,12 @@ async def ws_student(websocket: WebSocket):
                     boxes = None
                     faces_tensor = None
 
+                face_violation_happened = False
+
                 if boxes is None or len(boxes) == 0:
                     track["unknown_start_ts"] = None
                     track["unknown_reported"] = False
+
                 else:
                     try:
                         embs = await loop.run_in_executor(None, _compute_face_results_from_tensors, faces_tensor)
@@ -694,6 +1108,7 @@ async def ws_student(websocket: WebSocket):
                     for idx, box in enumerate(boxes):
                         x1, y1, x2, y2 = map(int, box)
                         emb = embs[idx] if idx < len(embs) else None
+
                         if emb is None:
                             label = "unknown"
                             sim = 0.0
@@ -712,8 +1127,10 @@ async def ws_student(websocket: WebSocket):
                     if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
                         face_violation_happened = True
                         reason = "multi_face"
+
                     elif len(detected_faces) == 1:
                         f = detected_faces[0]
+
                         if f["label"] == "unknown" or f["label"] != student:
                             if f["label"] == "unknown":
                                 if track["unknown_start_ts"] is None:
@@ -727,10 +1144,12 @@ async def ws_student(websocket: WebSocket):
                             else:
                                 face_violation_happened = True
                                 reason = "mismatch_face"
+
                         else:
                             track["unknown_start_ts"] = None
                             track["unknown_reported"] = False
 
+                    # --- Gửi vi phạm (nếu có) ---
                     if face_violation_happened:
                         draw = frame.copy()
                         for f in detected_faces:
@@ -764,15 +1183,18 @@ async def ws_student(websocket: WebSocket):
                         })
 
             # -------------------------
-            # 3) DRAW FINAL FRAME (behavior + face overlay)
+            # 3) DRAW FINAL FRAME
             # -------------------------
             draw_frame = behavior_service2.draw_detections(frame, detections)
-            for f in face_results:
-                x1, y1, x2, y2 = f["box"]
-                color = (0,255,0) if f["label"] == student else (0,0,255)
-                cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
-                text = f"{f['label']}:{f['similarity']:.2f}"
-                cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            # ❗Chỉ vẽ box khuôn mặt khi thực sự detect (mỗi 30s)
+            if ran_face_check:
+                for f in face_results:
+                    x1, y1, x2, y2 = f["box"]
+                    color = (0,255,0) if f["label"] == student else (0,0,255)
+                    cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
+                    text = f"{f['label']}:{f['similarity']:.2f}"
+                    cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             _, buffer = cv2.imencode(".jpg", draw_frame)
             frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
@@ -781,26 +1203,26 @@ async def ws_student(websocket: WebSocket):
             await websocket.send_json({
                 "type": "self_assessment",
                 "detections": detections,
-                "violation_rate": violation_rate,
                 "frame_b64": frame_b64,
                 "ts": ts,
-                "faces": face_results,
+                "faces": face_results if ran_face_check else [],   # <--- CHỈ GỬI MỖI 30s
             })
 
             await manager.broadcast_teachers(exam, {
                 "type": "student_frame",
                 "student": student,
                 "detections": detections,
-                "violation_rate": violation_rate,
                 "frame_b64": frame_b64,
                 "ts": ts,
-                "faces": face_results,
+                "faces": face_results if ran_face_check else [],   # <--- CHỈ GỬI MỖI 30s
             })
+
 
     except WebSocketDisconnect:
         violation_state.pop(student, None)
-        await manager.disconnect_student(exam, student)
+        await manager.disconnect_student(exam, session, student)
         print(f"🔴 Student {student} disconnected")
+
 
 # ==========================
 # WS: Giáo viên

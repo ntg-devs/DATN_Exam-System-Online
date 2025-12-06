@@ -1,0 +1,111 @@
+                             precision    recall  f1-score   support
+
+          pins_Adriana Lima       1.00      1.00      1.00        40
+          pins_Alex Lawther       1.00      1.00      1.00        40
+    pins_Alexandra Daddario       1.00      1.00      1.00        40
+          pins_Alvaro Morte       1.00      1.00      1.00        40
+           pins_Amanda Crew       1.00      1.00      1.00        40
+          pins_Andy Samberg       1.00      1.00      1.00        40
+         pins_Anne Hathaway       1.00      1.00      1.00        40
+        pins_Anthony Mackie       1.00      1.00      1.00        40
+         pins_Avril Lavigne       1.00      0.97      0.99        39
+           pins_Ben Affleck       1.00      0.95      0.97        40
+            pins_Bill Gates       1.00      0.97      0.99        40
+          pins_Bobby Morley       0.98      1.00      0.99        40
+      pins_Brenton Thwaites       1.00      0.97      0.99        40
+        pins_Brian J. Smith       1.00      1.00      1.00        40
+           pins_Brie Larson       1.00      0.97      0.99        40
+           pins_Chris Evans       0.98      1.00      0.99        40
+       pins_Chris Hemsworth       1.00      1.00      1.00        40
+           pins_Chris Pratt       0.98      1.00      0.99        40
+        pins_Christian Bale       0.97      0.97      0.97        40
+     pins_Cristiano Ronaldo       1.00      1.00      1.00        40
+    pins_Danielle Panabaker       1.00      1.00      1.00        40
+       pins_Dominic Purcell       1.00      1.00      1.00        40
+        pins_Dwayne Johnson       1.00      1.00      1.00        40
+          pins_Eliza Taylor       0.98      1.00      0.99        40
+        pins_Elizabeth Lail       0.97      1.00      0.99        38
+         pins_Emilia Clarke       0.98      1.00      0.99        40
+            pins_Emma Stone       1.00      1.00      1.00        40
+           pins_Emma Watson       1.00      1.00      1.00        40
+       pins_Gwyneth Paltrow       1.00      1.00      1.00        40
+           pins_Henry Cavil       1.00      0.97      0.99        40
+          pins_Hugh Jackman       1.00      0.97      0.99        39
+            pins_Inbar Lavi       1.00      1.00      1.00        40
+           pins_Irina Shayk       1.00      1.00      1.00        40
+         pins_Jake Mcdorman       1.00      1.00      1.00        40
+           pins_Jason Momoa       1.00      1.00      1.00        40
+     pins_Jennifer Lawrence       1.00      0.97      0.99        40
+         pins_Jeremy Renner       1.00      1.00      1.00        40
+        pins_Jessica Barden       0.95      1.00      0.98        40
+          pins_Jimmy Fallon       1.00      1.00      1.00        40
+           pins_Johnny Depp       0.97      0.97      0.97        40
+           pins_Josh Radnor       1.00      1.00      1.00        40
+      pins_Katharine Mcphee       1.00      1.00      1.00        40
+    pins_Katherine Langford       1.00      1.00      1.00        40
+          pins_Keanu Reeves       1.00      0.97      0.99        39
+        pins_Krysten Ritter       1.00      1.00      1.00        40
+     pins_Leonardo DiCaprio       0.93      0.97      0.95        39
+         pins_Lili Reinhart       0.97      0.95      0.96        40
+        pins_Lindsey Morgan       1.00      1.00      1.00        39
+          pins_Lionel Messi       1.00      0.97      0.99        40
+          pins_Logan Lerman       1.00      0.97      0.99        40
+      pins_Madelaine Petsch       0.97      0.97      0.97        40
+       pins_Maisie Williams       0.97      0.97      0.97        40
+         pins_Maria Pedraza       1.00      1.00      1.00        39
+    pins_Marie Avgeropoulos       0.97      0.97      0.97        40
+          pins_Mark Ruffalo       1.00      1.00      1.00        40
+       pins_Mark Zuckerberg       1.00      1.00      1.00        40
+             pins_Megan Fox       1.00      1.00      1.00        40
+           pins_Miley Cyrus       1.00      0.97      0.99        40
+    pins_Millie Bobby Brown       0.98      1.00      0.99        40
+       pins_Morena Baccarin       1.00      1.00      1.00        40
+        pins_Morgan Freeman       1.00      1.00      1.00        38
+          pins_Nadia Hilker       1.00      0.97      0.99        40
+        pins_Natalie Dormer       1.00      1.00      1.00        40
+       pins_Natalie Portman       1.00      1.00      1.00        40
+   pins_Neil Patrick Harris       1.00      1.00      1.00        40
+          pins_Pedro Alonso       1.00      1.00      1.00        40
+          pins_Penn Badgley       1.00      1.00      1.00        40
+            pins_Rami Malek       1.00      0.97      0.99        40
+      pins_Rebecca Ferguson       1.00      1.00      1.00        40
+        pins_Richard Harmon       0.98      1.00      0.99        40
+               pins_Rihanna       1.00      1.00      1.00        40
+        pins_Robert De Niro       1.00      0.97      0.99        40
+      pins_Robert Downey Jr       0.97      1.00      0.99        39
+   pins_Sarah Wayne Callies       1.00      1.00      1.00        40
+          pins_Selena Gomez       0.98      1.00      0.99        40
+pins_Shakira Isabel Mebarak       1.00      1.00      1.00        40
+         pins_Sophie Turner       0.98      1.00      0.99        40
+         pins_Stephen Amell       1.00      1.00      1.00        40
+          pins_Taylor Swift       0.97      0.97      0.97        40
+            pins_Tom Cruise       1.00      1.00      1.00        39
+             pins_Tom Hardy       1.00      1.00      1.00        40
+        pins_Tom Hiddleston       0.97      1.00      0.99        39
+           pins_Tom Holland       0.97      0.97      0.97        40
+    pins_Tuppence Middleton       1.00      0.97      0.99        40
+        pins_Ursula Corbero       1.00      1.00      1.00        40
+      pins_Wentworth Miller       1.00      1.00      1.00        40
+             pins_Zac Efron       0.98      1.00      0.99        40
+               pins_Zendaya       1.00      0.95      0.97        40
+           pins_Zoe Saldana       1.00      1.00      1.00        39
+   pins_alycia dabnem carey       0.98      1.00      0.99        40
+           pins_amber heard       1.00      1.00      1.00        40
+          pins_barack obama       1.00      1.00      1.00        40
+        pins_barbara palvin       1.00      1.00      1.00        40
+         pins_camila mendes       1.00      1.00      1.00        40
+       pins_elizabeth olsen       1.00      1.00      1.00        40
+            pins_ellen page       1.00      1.00      1.00        40
+             pins_elon musk       1.00      1.00      1.00        40
+             pins_gal gadot       0.97      0.95      0.96        40
+          pins_grant gustin       0.98      1.00      0.99        40
+            pins_jeff bezos       1.00      1.00      1.00        36
+        pins_kiernen shipka       0.98      1.00      0.99        40
+         pins_margot robbie       0.97      0.97      0.97        40
+        pins_melissa fumero       0.97      0.97      0.97        40
+    pins_scarlett johansson       0.97      0.97      0.97        40
+             pins_tom ellis       0.95      0.97      0.96        38
+
+                   accuracy                           0.99      4180
+                  macro avg       0.99      0.99      0.99      4180
+               weighted avg       0.99      0.99      0.99      4180

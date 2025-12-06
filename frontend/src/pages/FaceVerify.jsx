@@ -722,6 +722,14 @@ export default function FaceVerify() {
         method: "POST",
         body: formData,
       });
+      // const res = await fetch("http://https://unworkable-bernie-merely.ngrok-free.dev/api/verify-face", {
+      //   method: "POST",
+      //   body: formData,
+      // });
+      // const res = await fetch("https://103.142.24.110:8000/api/verify-face", {
+      //   method: "POST",
+      //   body: formData,
+      // });
 
       const data = await res.json();
       console.log("Kết quả backend:", data);

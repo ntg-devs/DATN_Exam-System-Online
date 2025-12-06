@@ -369,6 +369,8 @@ export default function StudentDashboard() {
     fetchClasses();
 
     const ws = new WebSocket("ws://localhost:8000/ws/classes");
+    // const ws = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/classes");
+    // const ws = new WebSocket("wss://103.142.24.110:8000/ws/classes");
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -435,8 +437,13 @@ export default function StudentDashboard() {
             >
               Lịch sử vi phạm
             </Link>
-            <NotificationBell studentId={userInfo._id}/>
-            <button className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow">
+            <NotificationBell studentId={userInfo._id} toast={toast} />
+            <button
+              onClick={() => {
+                navigate("/");
+              }}
+              className="px-3 py-2 bg-red-500 text-white rounded-xl flex items-center gap-2 hover:bg-red-600 shadow"
+            >
               <LogOut size={18} /> Đăng xuất
             </button>
           </div>

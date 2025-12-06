@@ -332,6 +332,8 @@ export default function StudentClassDetail() {
     if (!studentId) return;
 
     const ws = new WebSocket("ws://localhost:8000/ws/exams");
+    // const ws = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/exams");
+    // const ws = new WebSocket("wss://103.142.24.110:8000/ws/exams");
     wsRef.current = ws;
 
     ws.onopen = () => {

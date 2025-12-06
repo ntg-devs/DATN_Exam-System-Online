@@ -1,4 +1,6 @@
 const API_URL = "http://127.0.0.1:8000/api/";
+// const API_URL = "https://103.142.24.110:8000/api/";
+// const API_URL = "https://unworkable-bernie-merely.ngrok-free.dev/api/";
 
 // 🧩 Lấy danh sách phòng thi
 export async function getExams() {
@@ -108,6 +110,11 @@ export const teacherLogin = async (payload) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    // const res = await fetch("https://103.142.24.110:8000/api/login", {
+    //   method: "POST",
+    //   headers: { "Content-Type": "application/json" },
+    //   body: JSON.stringify(payload),
+    // });
 
     const data = await res.json();
     return data;

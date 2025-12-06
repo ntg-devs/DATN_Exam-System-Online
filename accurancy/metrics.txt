@@ -1,0 +1,9 @@
+===== MODEL EVALUATION =====
+Best Threshold: 0.5879
+Accuracy: 0.9982
+Precision: 0.8877
+Recall: 0.7153
+F1-score: 0.7922
+FAR: 0.0004
+FRR: 0.2847
+AUC: 0.9940

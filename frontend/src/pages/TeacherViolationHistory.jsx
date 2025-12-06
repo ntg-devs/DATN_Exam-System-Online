@@ -1784,7 +1784,8 @@ export default function TeacherViolationHistory() {
                       <p
                         className={`font-medium text-sm ${color} px-2 py-1 rounded-lg flex items-center`}
                       >
-                        {icon} Hành vi: {v.behavior || "Phát hiện face khác"}
+                        {icon} Hành vi:{" "}
+                        {v.behavior || "Phát hiện face (khuôn mặt) khác"}
                       </p>
                       {v.score !== undefined && (
                         <p className="text-gray-700 text-sm">
@@ -1797,7 +1798,10 @@ export default function TeacherViolationHistory() {
                         </p>
                       )}
                       <p className="text-gray-500 text-xs">
-                        Ghi nhận: {new Date(v.timestamp).toLocaleString()}
+                        Ghi nhận:{" "}
+                        {new Date(
+                          new Date(v.timestamp).getTime() + 7 * 60 * 60 * 1000
+                        ).toLocaleString()}
                       </p>
 
                       {/* Hiển thị faces */}
@@ -1811,7 +1815,9 @@ export default function TeacherViolationHistory() {
                               <div className="text-gray-600">
                                 Face {fIdx + 1}
                               </div>
-                              <div>Similarity: {f.similarity.toFixed(2)}</div>
+                              <div>
+                                Độ tương đồng: {f.similarity.toFixed(2)}
+                              </div>
                             </div>
                           ))}
                         </div>
