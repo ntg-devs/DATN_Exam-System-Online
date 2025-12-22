@@ -1,0 +1,2 @@
+AUC: 0.994852
+Best Threshold (cosine): -0.641972

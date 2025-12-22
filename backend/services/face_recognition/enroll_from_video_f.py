@@ -271,10 +271,24 @@ def align_face(image, landmarks):
 
 # ========== TÍNH EMBEDDING ========== #
 def extract_embedding(face_tensor):
+    # ĐẢM BẢO 4D
+    if face_tensor.dim() == 3:
+        face_tensor = face_tensor.unsqueeze(0)
+
     with torch.no_grad():
-        emb = resnet(face_tensor.unsqueeze(0).to(DEVICE)).cpu().numpy().squeeze()
+        emb = resnet(face_tensor.to(DEVICE))
+        emb = emb.detach().cpu().numpy()
+
+    # ===== LUÔN ÉP VỀ (512,) =====
+    if emb.ndim == 2:
+        emb = emb.mean(axis=0)
+
+    emb = emb.reshape(-1)  
+
+    # Normalize
     emb = normalize(emb.reshape(1, -1))[0]
     return emb
+
 
 
 # ========== KIỂM TRA CHẤT LƯỢNG FRAME ========== #
@@ -285,7 +299,7 @@ def is_good_frame(gray):
     # Độ sáng
     brightness = np.mean(gray)
 
-    return sharpness > 50 and 80 < brightness < 200
+    return sharpness > 10 and 60 < brightness < 200
 
 
 # ========== ENROLL VIDEO ========== #

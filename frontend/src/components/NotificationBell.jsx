@@ -136,12 +136,15 @@ import {
   pushNotification,
 } from "../redux/slices/notificationSlice";
 
-const NotificationBell = ({ studentId, toast }) => {
+import { URL_API, SOCKET_URL } from "../utils/path";
+
+const NotificationBell = ({ studentId, teacherId, toast }) => {
   const [open, setOpen] = useState(false);
   const { latest, unreadCount } = useSelector((state) => state.notification);
   const dispatch = useDispatch();
   const wsClassesRef = useRef(null);
   const wsExamsRef = useRef(null);
+  const wsTeachersRef = useRef(null);
 
   const toggleDropdown = () => {
     setOpen(!open);
@@ -156,6 +159,9 @@ const NotificationBell = ({ studentId, toast }) => {
       message = `Bạn được phân vào ca thi "${noti.nameSession}" của kỳ thi "${noti.nameExam}"`;
     } else if (noti.type === "class_updated") {
       message = `Bạn đã được thêm vào lớp "${noti.name}"`;
+    } else if (noti.type === "assigned_to_subject") {
+      const subject = noti.subject || {};
+      message = `Bạn đã được phân công giảng dạy môn học "${subject.name}" (${subject.code})`;
     } else {
       message = noti.message || "";
     }
@@ -163,7 +169,7 @@ const NotificationBell = ({ studentId, toast }) => {
     return (
       <div
         key={noti._id || Math.random()}
-        className="flex items-start gap-3 p-4  hover:bg-yellow-100  transition-all cursor-pointer"
+        className="flex items-start gap-3 p-4  hover:bg-yellow-100  transition-all cursor-pointer z-10"
       >
         {/* ICON */}
         <div className="w-10 h-10 flex items-center justify-center rounded-full bg-yellow-300 text-blue-600 text-lg shadow-sm">
@@ -189,63 +195,109 @@ const NotificationBell = ({ studentId, toast }) => {
   };
 
   useEffect(() => {
-    // WebSocket lớp học
-    const wsClasses = new WebSocket("ws://localhost:8000/ws/classes");
-    wsClassesRef.current = wsClasses;
+    const cleanupFunctions = [];
 
-    wsClasses.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+    // WebSocket cho sinh viên
+    if (studentId) {
+      // WebSocket lớp học
+      const wsClasses = new WebSocket(`${SOCKET_URL}/ws/classes`);
+      wsClassesRef.current = wsClasses;
 
-      if (data.type === "class_updated") {
-        const classData = data.class;
-        if (classData.students.map(String).includes(String(studentId))) {
-          dispatch(
-            pushNotification({
-              ...classData,
-              nameNoti: "Thêm vào lớp học",
-              type: "class_updated",
-            })
-          );
-          toast.success(`Bạn đã được thêm vào lớp học ${classData.name}`);
+      wsClasses.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "class_updated") {
+          const classData = data.class;
+          if (classData.students?.map(String).includes(String(studentId))) {
+            dispatch(
+              pushNotification({
+                ...classData,
+                nameNoti: "Thêm vào lớp học",
+                type: "class_updated",
+              })
+            );
+            toast?.success(`Bạn đã được thêm vào lớp học ${classData.name}`);
+          }
         }
-      }
-    };
+      };
 
-    // WebSocket ca thi
-    const wsExams = new WebSocket("ws://localhost:8000/ws/exams");
-    // const wsExams = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/exams");
-    // const wsExams = new WebSocket("wss://103.142.24.110:8000/ws/exams");
-    wsExamsRef.current = wsExams;
+      // WebSocket ca thi
+      const wsExams = new WebSocket(`${SOCKET_URL}/ws/exams`);
+      wsExamsRef.current = wsExams;
 
-    wsExams.onmessage = (ev) => {
-      const data = JSON.parse(ev.data);
+      wsExams.onmessage = (ev) => {
+        const data = JSON.parse(ev.data);
 
-      if (data.type === "added_to_session") {
-        if (data.student_ids.map(String).includes(String(studentId))) {
-          dispatch(
-            pushNotification({
-              type: "added_to_session",
-              nameNoti: "Phân vào ca thi",
-              exam_id: data.exam_id,
-              session_id: data.session_id,
-              nameExam: data.nameExam,
-              nameSession: data.nameSession,
-              student_ids: data.student_ids,
-              created_at: new Date().toISOString(),
-            })
-          );
-          toast.success(
-            `Bạn được phân vào ca thi "${data.nameSession}" của kỳ thi "${data.nameExam}"`
-          );
+        if (data.type === "added_to_session") {
+          if (data.student_ids?.map(String).includes(String(studentId))) {
+            dispatch(
+              pushNotification({
+                type: "added_to_session",
+                nameNoti: "Phân vào ca thi",
+                exam_id: data.exam_id,
+                session_id: data.session_id,
+                nameExam: data.nameExam,
+                nameSession: data.nameSession,
+                student_ids: data.student_ids,
+                created_at: new Date().toISOString(),
+              })
+            );
+            toast?.success(
+              `Bạn được phân vào ca thi "${data.nameSession}" của kỳ thi "${data.nameExam}"`
+            );
+          }
         }
-      }
-    };
+      };
+
+      cleanupFunctions.push(() => {
+        wsClasses.close();
+        wsExams.close();
+      });
+    }
+
+    // WebSocket cho giảng viên
+    if (teacherId) {
+      const wsTeachers = new WebSocket(
+        `${SOCKET_URL}/ws/teachers/notifications?teacher_id=${teacherId}`
+      );
+      wsTeachersRef.current = wsTeachers;
+
+      wsTeachers.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "assigned_to_subject") {
+            dispatch(
+              pushNotification({
+                type: "assigned_to_subject",
+                nameNoti: "Phân công giảng dạy",
+                subject: data.subject,
+                message: data.message,
+                created_at: data.created_at || new Date().toISOString(),
+              })
+            );
+            toast?.success(
+              `Bạn đã được phân công giảng dạy môn học: ${data.subject?.name}`
+            );
+          }
+        } catch (err) {
+          console.error("Lỗi parse WebSocket message:", err);
+        }
+      };
+
+      wsTeachers.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+
+      cleanupFunctions.push(() => {
+        wsTeachers.close();
+      });
+    }
 
     return () => {
-      wsClasses.close();
-      wsExams.close();
+      cleanupFunctions.forEach((cleanup) => cleanup());
     };
-  }, [dispatch, studentId]);
+  }, [dispatch, studentId, teacherId, toast]);
 
   return (
     <div className="relative">

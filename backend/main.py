@@ -10,8 +10,9 @@ from services.face_recognition.enroll_from_video_f import enroll_from_video, ext
 # from services.face_recognition.verify_face import verify_face
 from PIL import Image
 import os, io, base64, cv2, numpy as np, json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import pickle
+from pathlib import Path
 
 from pydantic import BaseModel, EmailStr
 from sklearn.metrics.pairwise import cosine_similarity
@@ -28,6 +29,11 @@ from passlib.hash import bcrypt
 from typing import Optional
 import asyncio
 import torch
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import timedelta
+
 
 
 # ==========================
@@ -44,23 +50,8 @@ app.add_middleware(
 
 manager = ConnectionManager()
 # behavior_service = BehaviorRecognitionService("models/final_model2.pth")
-
-# ==========================
-# API: Đăng ký video khuôn mặt
-# ==========================
-# @app.post("/api/register-video")
-# async def register_video(student_id: str = Form(...), name: str = Form(...), video: UploadFile = File(...)):
-#     try:
-#         VIDEO_DIR = "registered_videos"
-#         os.makedirs(VIDEO_DIR, exist_ok=True)
-#         path = os.path.join(VIDEO_DIR, f"{student_id}.webm")
-#         with open(path, "wb") as f:
-#             f.write(await video.read())
-#         used = enroll_from_video(path, student_id)
-#         return {"message": f"✅ Đăng ký thành công cho sinh viên có mã {name}", "frames_used": used}
-#     except Exception as e:
-#         return {"detail": str(e)}
-
+# Detector hành vi (Faster R-CNN)
+behavior_service2 = BehaviorDetectionService("models/fasterrcnn_final.pth")
 
 #Bổ sung logic lưu hình ảnh khi đăng kí
 
@@ -133,16 +124,16 @@ def _extract_by_reading_frames(video_path: str, target_second: float = 5.0):
 
         frame_count += 1
 
-        # Bảo vệ treo (tối đa 10 giây xử lý)
-        if frame_count > 1000:  # ~30-40s video là quá đủ
+        # Bảo vệ treo (tối đa ~30-40s video)
+        if frame_count > 1000:
             cap.release()
             return None, "Video quá dài hoặc lỗi"
 
 
 @app.post("/api/register-video")
 async def register_video(
-    student_id: str = Form(...), 
-    name: str = Form(...), 
+    student_id: str = Form(...),
+    name: str = Form(...),
     video: UploadFile = File(...)
 ):
     try:
@@ -153,6 +144,24 @@ async def register_video(
         path = os.path.join(VIDEO_DIR, f"{student_id}.webm")
         with open(path, "wb") as f:
             f.write(await video.read())
+
+        # ✅ Đánh dấu trạng thái xử lý ngay khi nhận video
+        await users_collection.update_one(
+            {"student_id": student_id},
+            {
+                "$set": {
+                    "face_processing_status": "processing",
+                    "face_registered": False,
+                }
+            }
+        )
+
+        # 👉 GỬI THÔNG BÁO PENDING
+        await notify_student(student_id, {
+            "type": "face_register_pending",
+            "student_id": student_id,
+            "message": "Hệ thống đang xử lý video đăng ký..."
+        })
 
         # 2. Training khuôn mặt
         frames_used = enroll_from_video(path, student_id)
@@ -172,20 +181,81 @@ async def register_video(
             {
                 "$set": {
                     "face_image": frame_base64,
+                    "face_processing_status": "completed",
+                    "face_registered": True,
                 }
             }
         )
 
+        # GỬI SUCCESS
+        await notify_student(student_id, {
+            "type": "face_register_success",
+            "student_id": student_id,
+            "name": name,
+            "message": "Đăng ký khuôn mặt thành công!",
+            "preview_image": frame_base64
+        })
+
         # 5. TRẢ VỀ FE LUÔN ẢNH BASE64
         return {
+            "success": True,
             "message": f"✅ Đăng ký thành công cho sinh viên có mã {name}",
             "frames_used": frames_used,
             "saved_image": True,
-            "face_image": frame_base64    # 👈 TRẢ BASE64 VỀ FE
+            "face_image": frame_base64
         }
 
     except Exception as e:
+        # GỬI FAILED TỚI ĐÚNG STUDENT
+        await notify_student(student_id, {
+            "type": "face_register_failed",
+            "student_id": student_id,
+            "error": str(e)
+        })
+        # ✅ Lưu trạng thái thất bại cho việc check sau này
+        await users_collection.update_one(
+            {"student_id": student_id},
+            {
+                "$set": {
+                    "face_processing_status": "failed",
+                    "face_registered": False,
+                }
+            }
+        )
         return {"detail": str(e)}
+
+#Realtime cho thông báo đăng kí khuôn mặt
+active_student_clients = {}  
+@app.websocket("/ws/student_register_video")
+async def ws_student(websocket: WebSocket):
+    await websocket.accept()
+
+    # Nhận student_id từ FE
+    student_id = await websocket.receive_text()
+
+    # Lưu vào danh sách client
+    active_student_clients[student_id] = websocket
+    print("WS connected:", student_id)
+
+    try:
+        while True:
+            await websocket.receive_text()  # giữ kết nối
+    except:
+        # Disconnect
+        if student_id in active_student_clients:
+            del active_student_clients[student_id]
+        print("WS disconnected:", student_id)
+
+async def notify_student(student_id: str, event: dict):
+    ws = active_student_clients.get(student_id)
+
+    if not ws:
+        return  # Student không online → bỏ qua
+
+    try:
+        await ws.send_json(event)
+    except:
+        del active_student_clients[student_id]
 
 
 # ==========================
@@ -266,12 +336,18 @@ async def verify_face_api(image: UploadFile = File(...)):
         best_score = -1
         best_label = "unknown"
 
-        for person_id, embs in db.items():
-            sc = cosine_similarity([emb], embs).max()
+        for person_id, data in db.items():
+            mean_emb = np.asarray(data["mean"]) 
+            sc = cosine_similarity(
+                emb.reshape(1, -1),
+                mean_emb.reshape(1, -1)
+            )[0][0]
+
             if sc > best_score:
                 best_score = sc
-                if sc >= 0.65:   # tốt nhất cho nhiều người
+                if sc >= 0.65:
                     best_label = person_id
+
 
         results.append({
             "label": best_label,
@@ -289,518 +365,8 @@ async def verify_face_api(image: UploadFile = File(...)):
 # ==========================
 # WS: Học sinh
 # ==========================
-# @app.websocket("/ws/student")
-# async def ws_student(websocket: WebSocket):
-#     exam = websocket.query_params.get("exam")
-#     student = websocket.query_params.get("student")
-
-#     await manager.connect_student(exam, student, websocket)
-#     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
-
-#     try:
-#         while True:
-#             msg = await websocket.receive_text()
-#             try:
-#                 data = json.loads(msg)
-#             except json.JSONDecodeError:
-#                 continue
-
-#             if data.get("type") == "frame":
-#                 b64 = data["b64"].split(",")[1]
-#                 img_bytes = base64.b64decode(b64)
-#                 np_arr = np.frombuffer(img_bytes, np.uint8)
-#                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-#                 # # Nhận diện hành vi
-#                 # behavior = behavior_service.predict(frame)
-#                 # print("Behavior predicted:", behavior)
-
-#                 # # Gửi lại kết quả cho học sinh
-#                 # await websocket.send_json({
-#                 #     "type": "self_assessment",
-#                 #     "behavior": behavior,
-#                 #     "ts": data.get("ts")
-#                 # })
-
-#                 # # Gửi broadcast cho giáo viên
-#                 # await manager.broadcast_teachers(exam, {
-#                 #     "type": "student_frame",
-#                 #     "student": student,
-#                 #     "frame_b64": data["b64"],
-#                 #     "behavior": behavior,
-#                 #     "ts": data.get("ts")
-#                 # })
-#                 # Nhận diện hành vi
-#                 raw = behavior_service.predict(frame)
-#                 print("Behavior predicted:", raw)
-
-#                 # ✅ Chuẩn hóa output
-#                 behavior = {
-#                     "class": raw.get("label", "unknown"),
-#                     "score": float(raw.get("confidence", 0)) / 100.0  # chuyển 41.3 → 0.413
-#                 }
-
-#                 print("Normalized behavior:", behavior)
-
-#                 # ✅ Gửi lại kết quả cho học sinh
-#                 await websocket.send_json({
-#                     "type": "self_assessment",
-#                     "behavior": behavior,
-#                     "ts": data.get("ts")
-#                 })
-
-#                 # ✅ Gửi broadcast cho giáo viên
-#                 await manager.broadcast_teachers(exam, {
-#                     "type": "student_frame",
-#                     "student": student,
-#                     "frame_b64": data["b64"],
-#                     "behavior": behavior,
-#                     "ts": data.get("ts")
-#                 })
-
-
-#     except WebSocketDisconnect:
-#         await manager.disconnect_student(exam, student)
-
-#-----------------------------------------------------
-behavior_service2 = BehaviorDetectionService("models/fasterrcnn_final.pth")
-#Code 4 code sinh viên
-
-# ============================================
-# FASTAPI BACKEND — WS STUDENT
-# ============================================
-
-# violation_state = {}
-
-# @app.websocket("/ws/student")
-# async def ws_student(websocket: WebSocket):
-#     import json, base64
-#     import numpy as np
-#     import cv2
-#     from datetime import datetime
-
-#     exam = websocket.query_params.get("exam")
-#     student = websocket.query_params.get("student")
-
-#     student_info = await users_collection.find_one({"_id": student})
-#     class_id = websocket.query_params.get("class_id") 
-#     await manager.connect_student(exam, student, websocket)
-#     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
-
-#     violation_state[student] = {
-#         "last_behavior": None,
-#         "start_ts": None,
-#         "reported": False
-#     }
-
-#     try:
-#         while True:
-#             raw_msg = await websocket.receive_text()
-
-#             try:
-#                 data = json.loads(raw_msg)
-#             except:
-#                 continue
-
-#             # ---------------------------------------------------
-#             #   📌 HANDLE CAMERA FRAME
-#             # ---------------------------------------------------
-#             if data.get("type") == "frame":
-#                 ts = int(data["ts"])
-
-#                 # Giải mã từ base64
-#                 b64 = data["b64"].split(",")[1]
-#                 img_bytes = base64.b64decode(b64)
-
-#                 np_arr = np.frombuffer(img_bytes, np.uint8)
-#                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-#                 # Detect
-#                 detections = behavior_service2.predict(frame, score_thresh=0.4)
-
-#                 abnormal = [d for d in detections if d["label"] != "normal"]
-#                 violation_rate = len(abnormal) / len(detections) if detections else 0
-
-#                 if abnormal:
-#                     top = max(abnormal, key=lambda d: d["score"])
-#                 else:
-#                     top = {"label": "normal", "score": 1.0}
-
-#                 behavior = top["label"]
-#                 score = top["score"]
-
-#                 # ---------------------------------------------------
-#                 #   ⚠️ LOGIC 3 GIÂY LIÊN TỤC
-#                 # ---------------------------------------------------
-#                 track = violation_state[student]
-
-#                 if behavior != "normal" and score > 0.5:
-#                     if track["last_behavior"] != behavior:
-#                         track["last_behavior"] = behavior
-#                         track["start_ts"] = ts
-#                         track["reported"] = False
-
-#                     else:
-#                         duration = ts - track["start_ts"]
-
-#                         print("THời gian vi phạm", duration)
-
-#                         if duration >= 3000 and not track["reported"]:
-#                             track["reported"] = True
-
-#                             # ---------------------------------------------------
-#                             #  🎨 TẠO ẢNH BBOX LÀM EVIDENCE
-#                             # ---------------------------------------------------
-#                             draw_frame = behavior_service2.draw_detections(
-#                                 frame, detections
-#                             )
-#                             _, buffer = cv2.imencode(".jpg", draw_frame)
-#                             evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-#                             # ---------------------------------------------------
-#                             #     💾 LƯU MONGODB
-#                             # ---------------------------------------------------
-#                             await violates_collection.insert_one({
-#                                 "student": student,
-#                                 "exam_id": exam,
-#                                 "class_id": class_id,
-#                                 "behavior": behavior,
-#                                 "score": score,
-#                                 "start_ts": track["start_ts"],
-#                                 "end_ts": ts,
-#                                 "duration_ms": duration,
-#                                 "timestamp": datetime.utcnow(),
-#                                 "evidence": evidence_b64,
-#                             })
-
-#                             # print(f"[🔥] SAVED VIOLATION: {student} - {duration}")
-
-#                             # ---------------------------------------------------
-#                             #  📡 GỬI GIẢNG VIÊN THÔNG BÁO VI PHẠM
-#                             # ---------------------------------------------------
-#                             await manager.broadcast_teachers(exam, {
-#                                 "type": "violation_detected",
-#                                 "student": student,
-#                                 "behavior": behavior,
-#                                 "duration": duration,
-#                                 "timestamp": ts,
-#                                 "evidence": evidence_b64,
-#                             })
-
-#                 else:
-#                     track["last_behavior"] = None
-#                     track["start_ts"] = None
-#                     track["reported"] = False
-
-#                 # ---------------------------------------------------
-#                 #   🎨 TẠO FRAME LIVE ĐÃ VẼ BBOX
-#                 # ---------------------------------------------------
-#                 draw_frame = behavior_service2.draw_detections(frame, detections)
-#                 _, buffer = cv2.imencode(".jpg", draw_frame)
-#                 frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-#                 # Gửi lại học sinh
-#                 await websocket.send_json({
-#                     "type": "self_assessment",
-#                     "detections": detections,
-#                     "violation_rate": violation_rate,
-#                     "frame_b64": frame_b64,
-#                     "ts": ts,
-#                 })
-
-#                 # Gửi realtime cho giáo viên
-#                 await manager.broadcast_teachers(exam, {
-#                     "type": "student_frame",
-#                     "student": student,
-#                     "detections": detections,
-#                     "violation_rate": violation_rate,
-#                     "frame_b64": frame_b64,
-#                     "ts": ts,
-#                 })
-
-#     except WebSocketDisconnect:
-#         violation_state.pop(student, None)
-#         await manager.disconnect_student(exam, student)
-#         print(f"🔴 Student {student} disconnected")
-
 
 # Nhận diện hành vi sinh viên có bổ sung nhận diện khuôn mặt realtime 
-
-# # ===========================
-# # CONFIG
-# # ===========================
-# FACE_SIMILARITY_THRESHOLD = 0.65
-# FACE_CHECK_INTERVAL_MS = 500
-# MULTI_FACE_VIOLATION_MIN = 2
-# UNKNOWN_FACE_PERSIST_MS = 3000
-
-# # ===========================
-# # HELPER FUNCTIONS
-# # ===========================
-# def _detect_faces_pil(pil_img):
-#     boxes, probs = mtcnn.detect(pil_img)
-#     faces_tensor = mtcnn(pil_img)  # list of tensors or stacked
-#     return boxes, probs, faces_tensor
-
-# def _compute_face_results_from_tensors(faces_tensor):
-#     if isinstance(faces_tensor, list):
-#         if len(faces_tensor) == 0:
-#             return []
-#         faces_stack = torch.stack(faces_tensor)
-#     else:
-#         faces_stack = faces_tensor
-
-#     results = []
-#     for i in range(faces_stack.shape[0]):
-#         ft = faces_stack[i]
-#         emb = extract_embedding(ft)  # 1D np array
-#         results.append(emb)
-#     return results
-
-# def _find_best_label_for_emb(emb, db, threshold=FACE_SIMILARITY_THRESHOLD):
-#     best_score = -1.0
-#     best_label = "unknown"
-#     for person_id, embs in db.items():
-#         sc = cosine_similarity([emb], embs).max()
-#         if sc > best_score:
-#             best_score = float(sc)
-#             if sc >= threshold:
-#                 best_label = person_id
-#     return best_label, float(best_score)
-
-# # ===========================
-# # WEBSOCKET HANDLER
-# # ===========================
-# violation_state = {}
-
-# @app.websocket("/ws/student")
-# async def ws_student(websocket: WebSocket):
-#     from fastapi import WebSocketDisconnect
-#     await websocket.accept()
-
-#     exam = websocket.query_params.get("exam")
-#     student = websocket.query_params.get("student")
-#     class_id = websocket.query_params.get("class_id")
-#     student_info = await users_collection.find_one({"_id": student})
-
-#     await manager.connect_student(exam, student, websocket)
-#     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
-
-#     violation_state[student] = {
-#         "last_behavior": None,
-#         "start_ts": None,
-#         "reported": False,
-#         "last_face_check_ts": 0,
-#         "unknown_start_ts": None,
-#         "unknown_reported": False,
-#     }
-
-#     loop = asyncio.get_running_loop()
-
-#     try:
-#         while True:
-#             raw_msg = await websocket.receive_text()
-#             try:
-#                 data = json.loads(raw_msg)
-#             except:
-#                 continue
-
-#             if data.get("type") != "frame":
-#                 continue
-
-#             ts = int(data["ts"])
-#             b64 = data["b64"].split(",")[1]
-#             img_bytes = base64.b64decode(b64)
-#             np_arr = np.frombuffer(img_bytes, np.uint8)
-#             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-#             # -------------------------
-#             # 1) BEHAVIOR DETECTION
-#             # -------------------------
-#             detections = behavior_service2.predict(frame, score_thresh=0.4)
-#             abnormal = [d for d in detections if d["label"] != "normal"]
-#             violation_rate = len(abnormal) / len(detections) if detections else 0
-#             top = max(abnormal, key=lambda d: d["score"]) if abnormal else {"label": "normal", "score": 1.0}
-#             behavior = top["label"]
-#             score = top["score"]
-
-#             track = violation_state[student]
-#             if behavior != "normal" and score > 0.5:
-#                 if track["last_behavior"] != behavior:
-#                     track["last_behavior"] = behavior
-#                     track["start_ts"] = ts
-#                     track["reported"] = False
-#                 else:
-#                     duration = ts - (track["start_ts"] or ts)
-#                     if duration >= 3000 and not track["reported"]:
-#                         track["reported"] = True
-#                         draw_frame = behavior_service2.draw_detections(frame, detections)
-#                         _, buffer = cv2.imencode(".jpg", draw_frame)
-#                         evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-#                         await violates_collection.insert_one({
-#                             "student": student,
-#                             "exam_id": exam,
-#                             "class_id": class_id,
-#                             "type": "behavior",
-#                             "behavior": behavior,
-#                             "score": score,
-#                             "start_ts": track["start_ts"],
-#                             "end_ts": ts,
-#                             "duration_ms": duration,
-#                             "timestamp": datetime.utcnow(),
-#                             "evidence": evidence_b64,
-#                         })
-#                         await manager.broadcast_teachers(exam, {
-#                             "type": "violation_detected",
-#                             "student": student,
-#                             "behavior": behavior,
-#                             "duration": duration,
-#                             "timestamp": ts,
-#                             "evidence": evidence_b64,
-#                         })
-#             else:
-#                 track["last_behavior"] = None
-#                 track["start_ts"] = None
-#                 track["reported"] = False
-
-#             # -------------------------
-#             # 2) FACE CHECK
-#             # -------------------------
-#             now_ms = ts
-#             do_face_check = (now_ms - track["last_face_check_ts"]) >= FACE_CHECK_INTERVAL_MS
-#             face_results = []
-#             face_violation_happened = False
-
-#             if do_face_check:
-#                 track["last_face_check_ts"] = now_ms
-#                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-#                 try:
-#                     boxes, probs, faces_tensor = await loop.run_in_executor(None, _detect_faces_pil, pil_img)
-#                 except:
-#                     boxes = None
-#                     faces_tensor = None
-
-#                 if boxes is None or len(boxes) == 0:
-#                     track["unknown_start_ts"] = None
-#                     track["unknown_reported"] = False
-#                 else:
-#                     try:
-#                         embs = await loop.run_in_executor(None, _compute_face_results_from_tensors, faces_tensor)
-#                     except:
-#                         embs = []
-
-#                     detected_faces = []
-#                     for idx, box in enumerate(boxes):
-#                         x1, y1, x2, y2 = map(int, box)
-#                         emb = embs[idx] if idx < len(embs) else None
-#                         if emb is None:
-#                             label = "unknown"
-#                             sim = 0.0
-#                         else:
-#                             label, sim = _find_best_label_for_emb(emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD)
-
-#                         detected_faces.append({
-#                             "box": [x1, y1, x2, y2],
-#                             "label": label,
-#                             "similarity": sim,
-#                         })
-
-#                     face_results = detected_faces
-
-#                     # --- Face Violation Rules ---
-#                     if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
-#                         face_violation_happened = True
-#                         reason = "multi_face"
-#                     elif len(detected_faces) == 1:
-#                         f = detected_faces[0]
-#                         if f["label"] == "unknown" or f["label"] != student:
-#                             if f["label"] == "unknown":
-#                                 if track["unknown_start_ts"] is None:
-#                                     track["unknown_start_ts"] = now_ms
-#                                 else:
-#                                     duration_unknown = now_ms - track["unknown_start_ts"]
-#                                     if duration_unknown >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
-#                                         track["unknown_reported"] = True
-#                                         face_violation_happened = True
-#                                         reason = "unknown_face_persistent"
-#                             else:
-#                                 face_violation_happened = True
-#                                 reason = "mismatch_face"
-#                         else:
-#                             track["unknown_start_ts"] = None
-#                             track["unknown_reported"] = False
-
-#                     if face_violation_happened:
-#                         draw = frame.copy()
-#                         for f in detected_faces:
-#                             x1, y1, x2, y2 = f["box"]
-#                             color = (0,255,0) if f["label"] == student else (0,0,255)
-#                             cv2.rectangle(draw, (x1,y1), (x2,y2), color, 2)
-#                             text = f"{f['label']}:{f['similarity']:.2f}"
-#                             cv2.putText(draw, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-#                         _, buffer = cv2.imencode(".jpg", draw)
-#                         evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-#                         await violates_collection.insert_one({
-#                             "student": student,
-#                             "exam_id": exam,
-#                             "class_id": class_id,
-#                             "type": "face",
-#                             "reason": reason,
-#                             "faces": detected_faces,
-#                             "timestamp": datetime.utcnow(),
-#                             "evidence": evidence_b64,
-#                         })
-
-#                         await manager.broadcast_teachers(exam, {
-#                             "type": "face_alert",
-#                             "student": student,
-#                             "reason": reason,
-#                             "faces": detected_faces,
-#                             "timestamp": now_ms,
-#                             "evidence": evidence_b64,
-#                         })
-
-#             # -------------------------
-#             # 3) DRAW FINAL FRAME (behavior + face overlay)
-#             # -------------------------
-#             draw_frame = behavior_service2.draw_detections(frame, detections)
-#             for f in face_results:
-#                 x1, y1, x2, y2 = f["box"]
-#                 color = (0,255,0) if f["label"] == student else (0,0,255)
-#                 cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
-#                 text = f"{f['label']}:{f['similarity']:.2f}"
-#                 cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-#             _, buffer = cv2.imencode(".jpg", draw_frame)
-#             frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-#             # Gửi client và teacher
-#             await websocket.send_json({
-#                 "type": "self_assessment",
-#                 "detections": detections,
-#                 "violation_rate": violation_rate,
-#                 "frame_b64": frame_b64,
-#                 "ts": ts,
-#                 "faces": face_results,
-#             })
-
-#             await manager.broadcast_teachers(exam, {
-#                 "type": "student_frame",
-#                 "student": student,
-#                 "detections": detections,
-#                 "violation_rate": violation_rate,
-#                 "frame_b64": frame_b64,
-#                 "ts": ts,
-#                 "faces": face_results,
-#             })
-
-#     except WebSocketDisconnect:
-#         violation_state.pop(student, None)
-#         await manager.disconnect_student(exam, student)
-#         print(f"🔴 Student {student} disconnected")
 
 # Final optimizations
 # ===========================
@@ -838,13 +404,24 @@ def _compute_face_results_from_tensors(faces_tensor):
 def _find_best_label_for_emb(emb, db, threshold=FACE_SIMILARITY_THRESHOLD):
     best_score = -1.0
     best_label = "unknown"
-    for person_id, embs in db.items():
-        sc = cosine_similarity([emb], embs).max()
+
+    emb = np.asarray(emb).reshape(1, -1)  
+
+    for person_id, data in db.items():
+        if "mean" not in data:
+            continue
+
+        mean_emb = np.asarray(data["mean"]).reshape(1, -1)
+
+        sc = cosine_similarity(emb, mean_emb)[0][0]
+
         if sc > best_score:
             best_score = float(sc)
             if sc >= threshold:
                 best_label = person_id
+
     return best_label, float(best_score)
+
 
 # ===========================
 # WEBSOCKET HANDLER
@@ -861,7 +438,6 @@ async def ws_student(websocket: WebSocket):
     print("aaa", session)
     student = websocket.query_params.get("student")
     class_id = websocket.query_params.get("class_id")
-    student_info = await users_collection.find_one({"_id": student})
 
     await manager.connect_student(exam, session, student, websocket)
     await manager.broadcast_teachers(exam, {"type": "student_joined", "student": student})
@@ -945,136 +521,6 @@ async def ws_student(websocket: WebSocket):
                 track["behavior_start_ts"] = None
                 track["behavior_reported"] = False
 
-            # # -------------------------
-            # # 2) FACE CHECK (mỗi 30s)
-            # # -------------------------
-            # if now_ms - track["last_face_check_ts"] >= FACE_CHECK_INTERVAL_MS:
-            #     track["last_face_check_ts"] = now_ms
-            #     pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-            #     try:
-            #         boxes, probs, faces_tensor = await loop.run_in_executor(None, _detect_faces_pil, pil_img)
-            #     except:
-            #         boxes = None
-            #         faces_tensor = None
-
-            #     face_results = []
-            #     face_violation_happened = False
-
-            #     if boxes is None or len(boxes) == 0:
-            #         track["unknown_start_ts"] = None
-            #         track["unknown_reported"] = False
-            #     else:
-            #         try:
-            #             embs = await loop.run_in_executor(None, _compute_face_results_from_tensors, faces_tensor)
-            #         except:
-            #             embs = []
-
-            #         detected_faces = []
-            #         for idx, box in enumerate(boxes):
-            #             x1, y1, x2, y2 = map(int, box)
-            #             emb = embs[idx] if idx < len(embs) else None
-            #             if emb is None:
-            #                 label = "unknown"
-            #                 sim = 0.0
-            #             else:
-            #                 label, sim = _find_best_label_for_emb(emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD)
-
-            #             detected_faces.append({
-            #                 "box": [x1, y1, x2, y2],
-            #                 "label": label,
-            #                 "similarity": sim,
-            #             })
-
-            #         face_results = detected_faces
-
-            #         # --- Face Violation Rules ---
-            #         if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
-            #             face_violation_happened = True
-            #             reason = "multi_face"
-            #         elif len(detected_faces) == 1:
-            #             f = detected_faces[0]
-            #             if f["label"] == "unknown" or f["label"] != student:
-            #                 if f["label"] == "unknown":
-            #                     if track["unknown_start_ts"] is None:
-            #                         track["unknown_start_ts"] = now_ms
-            #                     else:
-            #                         duration_unknown = now_ms - track["unknown_start_ts"]
-            #                         if duration_unknown >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
-            #                             track["unknown_reported"] = True
-            #                             face_violation_happened = True
-            #                             reason = "unknown_face_persistent"
-            #                 else:
-            #                     face_violation_happened = True
-            #                     reason = "mismatch_face"
-            #             else:
-            #                 track["unknown_start_ts"] = None
-            #                 track["unknown_reported"] = False
-
-            #         if face_violation_happened:
-            #             draw = frame.copy()
-            #             for f in detected_faces:
-            #                 x1, y1, x2, y2 = f["box"]
-            #                 color = (0,255,0) if f["label"] == student else (0,0,255)
-            #                 cv2.rectangle(draw, (x1,y1), (x2,y2), color, 2)
-            #                 text = f"{f['label']}:{f['similarity']:.2f}"
-            #                 cv2.putText(draw, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            #             _, buffer = cv2.imencode(".jpg", draw)
-            #             evidence_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-            #             await violates_collection.insert_one({
-            #                 "student": student,
-            #                 "exam_id": exam,
-            #                 "class_id": class_id,
-            #                 "type": "face",
-            #                 "reason": reason,
-            #                 "faces": detected_faces,
-            #                 "timestamp": datetime.utcnow(),
-            #                 "evidence": evidence_b64,
-            #             })
-
-            #             await manager.broadcast_teachers(exam, {
-            #                 "type": "face_alert",
-            #                 "student": student,
-            #                 "reason": reason,
-            #                 "faces": detected_faces,
-            #                 "timestamp": now_ms,
-            #                 "evidence": evidence_b64,
-            #             })
-
-            # # -------------------------
-            # # 3) DRAW FINAL FRAME
-            # # -------------------------
-            # draw_frame = behavior_service2.draw_detections(frame, detections)
-            # for f in face_results:
-            #     x1, y1, x2, y2 = f["box"]
-            #     color = (0,255,0) if f["label"] == student else (0,0,255)
-            #     cv2.rectangle(draw_frame, (x1,y1), (x2,y2), color, 2)
-            #     text = f"{f['label']}:{f['similarity']:.2f}"
-            #     cv2.putText(draw_frame, text, (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            # _, buffer = cv2.imencode(".jpg", draw_frame)
-            # frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-
-            # # Gửi client và teacher
-            # await websocket.send_json({
-            #     "type": "self_assessment",
-            #     "detections": detections,
-            #     "frame_b64": frame_b64,
-            #     "ts": ts,
-            #     "faces": face_results,
-            # })
-
-            # await manager.broadcast_teachers(exam, {
-            #     "type": "student_frame",
-            #     "student": student,
-            #     "detections": detections,
-            #     "frame_b64": frame_b64,
-            #     "ts": ts,
-            #     "faces": face_results,
-            # })
-
             # -------------------------
             # 2) FACE CHECK (mỗi 30s)
             # -------------------------
@@ -1140,7 +586,7 @@ async def ws_student(websocket: WebSocket):
                                     if duration_unknown >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
                                         track["unknown_reported"] = True
                                         face_violation_happened = True
-                                        reason = "unknown_face_persistent"
+                                        reason = "Nghi vấn thi hộ"
                             else:
                                 face_violation_happened = True
                                 reason = "mismatch_face"
@@ -1224,6 +670,274 @@ async def ws_student(websocket: WebSocket):
         print(f"🔴 Student {student} disconnected")
 
 
+# ==========================
+# API UPLOAD VIDEO
+# ==========================
+# @app.post("/api/analyze-video")
+# async def analyze_video(file: UploadFile = File(...)):
+
+#     os.makedirs("temp_videos", exist_ok=True)
+#     os.makedirs("results", exist_ok=True)
+
+#     # --- Save video ---
+#     video_path = f"temp_videos/{file.filename}"
+#     with open(video_path, "wb") as f:
+#         f.write(await file.read())
+
+#     cap = cv2.VideoCapture(video_path)
+#     fps = cap.get(cv2.CAP_PROP_FPS)
+#     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+#     # Lấy 1 frame mỗi 3 giây
+#     frame_interval_sec = 3
+#     frame_step = int(frame_interval_sec * fps)
+
+#     track = {
+#         "last_face_check_ts": 0,
+#         "unknown_start_ts": None,
+#         "unknown_reported": False,
+#     }
+
+#     violations = []
+
+#     frame_index = 0
+
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+
+#         # Chỉ phân tích frame mỗi 3 giây
+#         if frame_index % frame_step == 0:
+#             ts_ms = int((frame_index / fps) * 1000)
+
+#             # -----------------
+#             # 1) BEHAVIOR DETECTION (ghi nhận ngay)
+#             # -----------------
+#             detections = behavior_service2.predict(frame, score_thresh=0.4)
+#             abnormal = [d for d in detections if d["label"] != "normal"]
+
+#             for d in abnormal:
+#                 if d["score"] > 0.5:
+#                     violations.append({
+#                         "type": "behavior",
+#                         "behavior": d["label"],
+#                         "score": d["score"],
+#                         "timestamp": ts_ms
+#                     })
+
+#             # -----------------
+#             # 2) FACE DETECTION
+#             # -----------------
+#             if ts_ms - track["last_face_check_ts"] >= FACE_CHECK_INTERVAL_MS:
+#                 track["last_face_check_ts"] = ts_ms
+
+#                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+#                 try:
+#                     boxes, probs, faces_tensor = _detect_faces_pil(pil_img)
+#                 except:
+#                     boxes, probs, faces_tensor = None, None, None
+
+#                 if boxes is None or len(boxes) == 0:
+#                     track["unknown_start_ts"] = None
+#                     track["unknown_reported"] = False
+#                 else:
+#                     try:
+#                         embs = _compute_face_results_from_tensors(faces_tensor)
+#                     except:
+#                         embs = []
+
+#                     detected_faces = []
+#                     for idx, box in enumerate(boxes):
+#                         x1, y1, x2, y2 = map(int, box)
+#                         emb = embs[idx] if idx < len(embs) else None
+#                         if emb is None:
+#                             label, sim = "unknown", 0.0
+#                         else:
+#                             label, sim = _find_best_label_for_emb(emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD)
+#                         detected_faces.append({"box":[x1,y1,x2,y2],"label":label,"similarity":sim})
+
+#                     # RULES
+#                     if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
+#                         violations.append({"type":"face","reason":"multi_face","faces":detected_faces,"timestamp":ts_ms})
+#                     elif len(detected_faces) == 1:
+#                         f = detected_faces[0]
+#                         if f["label"]=="unknown":
+#                             if track["unknown_start_ts"] is None:
+#                                 track["unknown_start_ts"] = ts_ms
+#                             else:
+#                                 duration = ts_ms - track["unknown_start_ts"]
+#                                 if duration >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
+#                                     track["unknown_reported"] = True
+#                                     violations.append({"type":"face","reason":"unknown_face","faces":detected_faces,"timestamp":ts_ms})
+#                         else:
+#                             track["unknown_start_ts"] = None
+#                             track["unknown_reported"] = False
+
+#         frame_index += 1
+
+#     cap.release()
+
+#     # --- SAVE JSON ---
+#     json_path = f"results/violates_{file.filename}.json"
+#     with open(json_path, "w", encoding="utf8") as f:
+#         json.dump(violations, f, indent=4, ensure_ascii=False)
+
+#     # --- SAVE TXT ---
+#     txt_path = f"results/violates_{file.filename}.txt"
+#     with open(txt_path, "w", encoding="utf8") as f:
+#         for v in violations:
+#             f.write(json.dumps(v, ensure_ascii=False) + "\n")
+
+#     return {
+#         "status": "done",
+#         "total_violations": len(violations),
+#         "json_file": json_path,
+#         "txt_file": txt_path,
+#         "violations": violations
+#     }
+
+def cv2_to_base64(img):
+    """Chuyển ảnh OpenCV sang base64 string"""
+    _, buffer = cv2.imencode(".jpg", img)
+    return base64.b64encode(buffer).decode("utf-8")
+
+@app.post("/api/analyze-video")
+async def analyze_video(file: UploadFile = File(...)):
+    # --- Tạo thư mục cần thiết ---
+    os.makedirs("temp_videos", exist_ok=True)
+    os.makedirs("results/images", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
+
+    # --- Lưu video tạm ---
+    video_path = f"temp_videos/{file.filename}"
+    with open(video_path, "wb") as f:
+        f.write(await file.read())
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_interval_sec = 3
+    frame_step = int(frame_interval_sec * fps)
+
+    track = {"last_face_check_ts": 0, "unknown_start_ts": None, "unknown_reported": False}
+    violations = []
+    frame_index = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_index % frame_step == 0:
+            ts_ms = int((frame_index / fps) * 1000)
+            img_copy = frame.copy()
+
+            # -----------------
+            # 1) BEHAVIOR DETECTION
+            # -----------------
+            detections = behavior_service2.predict(frame, score_thresh=0.4)
+            abnormal = [d for d in detections if d["label"] != "normal"]
+
+            for d in abnormal:
+                if d["score"] > 0.5:
+                    # Vẽ bounding box màu đỏ
+                    if "box" in d:
+                        x1, y1, x2, y2 = map(int, d["box"])
+                        cv2.rectangle(img_copy, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        cv2.putText(img_copy, f"{d['label']} {d['score']:.2f}", 
+                                    (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+                    violations.append({
+                        "type": "behavior",
+                        "behavior": d["label"],
+                        "score": d["score"],
+                        "timestamp": ts_ms/1000,
+                        "img_base64": cv2_to_base64(img_copy)
+                    })
+
+            # -----------------
+            # 2) FACE DETECTION
+            # -----------------
+            if ts_ms - track["last_face_check_ts"] >= FACE_CHECK_INTERVAL_MS:
+                track["last_face_check_ts"] = ts_ms
+                pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                try:
+                    boxes, probs, faces_tensor = _detect_faces_pil(pil_img)
+                except:
+                    boxes, probs, faces_tensor = None, None, None
+
+                if boxes is not None and len(boxes) > 0:
+                    try:
+                        embs = _compute_face_results_from_tensors(faces_tensor)
+                    except:
+                        embs = []
+
+                    detected_faces = []
+                    for idx, box in enumerate(boxes):
+                        x1, y1, x2, y2 = map(int, box)
+                        emb = embs[idx] if idx < len(embs) else None
+                        label, sim = ("unknown", 0.0) if emb is None else _find_best_label_for_emb(
+                            emb, face_db, threshold=FACE_SIMILARITY_THRESHOLD
+                        )
+                        detected_faces.append({"box":[x1,y1,x2,y2],"label":label,"similarity":sim})
+
+                        # Vẽ bounding box màu đỏ cho vi phạm
+                        cv2.rectangle(img_copy, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        cv2.putText(img_copy, f"{label} {sim:.2f}", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+                    # RULES
+                    if len(detected_faces) >= MULTI_FACE_VIOLATION_MIN:
+                        violations.append({
+                            "type":"face",
+                            "reason":"multi_face",
+                            "faces":detected_faces,
+                            "timestamp":ts_ms/1000,
+                            "img_base64": cv2_to_base64(img_copy)
+                        })
+                    elif len(detected_faces) == 1:
+                        f = detected_faces[0]
+                        if f["label"]=="unknown":
+                            if track["unknown_start_ts"] is None:
+                                track["unknown_start_ts"] = ts_ms
+                            else:
+                                duration = ts_ms - track["unknown_start_ts"]
+                                if duration >= UNKNOWN_FACE_PERSIST_MS and not track["unknown_reported"]:
+                                    track["unknown_reported"] = True
+                                    violations.append({
+                                        "type":"face",
+                                        "reason":"unknown_face",
+                                        "faces":detected_faces,
+                                        "timestamp":ts_ms/1000,
+                                        "img_base64": cv2_to_base64(img_copy)
+                                    })
+                        else:
+                            track["unknown_start_ts"] = None
+                            track["unknown_reported"] = False
+
+        frame_index += 1
+
+    cap.release()
+
+    # --- SAVE JSON ---
+    json_path = f"results/violates_{file.filename}.json"
+    Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(json_path, "w", encoding="utf8") as f:
+        json.dump(violations, f, indent=4, ensure_ascii=False)
+
+    # --- SAVE TXT ---
+    txt_path = f"results/violates_{file.filename}.txt"
+    Path(txt_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(txt_path, "w", encoding="utf8") as f:
+        for v in violations:
+            f.write(json.dumps(v, ensure_ascii=False) + "\n")
+
+    return {
+        "status": "done",
+        "total_violations": len(violations),
+        "json_file": json_path,
+        "txt_file": txt_path,
+        "violations": violations
+    }
 # ==========================
 # WS: Giáo viên
 # ==========================
@@ -1416,6 +1130,7 @@ async def register_user(data: RegisterInput):
         "student_id": data.student_id,
         "role": role,
         "created_at": datetime.utcnow(),
+        "is_active": True
     }
 
     result = await users_collection.insert_one(user)
@@ -1424,6 +1139,135 @@ async def register_user(data: RegisterInput):
     return {"success": True, "user": serialize_doc(inserted_user)}
 
 
+@app.post("/api/update-user")
+async def update_user(data: dict):
+    """
+    Cập nhật thông tin tài khoản (tên, email, mã sinh viên, role).
+    Body: { id, name, email, student_id, role }
+    """
+    user_id = data.get("id")
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    student_id = (data.get("student_id") or "").strip() or None
+    role = (data.get("role") or "").strip()
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="ID người dùng không hợp lệ.")
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên không được để trống.")
+
+    if role and role not in ["teacher", "student", "admin"]:
+        raise HTTPException(status_code=400, detail="Vai trò không hợp lệ.")
+
+    user_obj_id = ObjectId(user_id)
+    existing_user = await users_collection.find_one({"_id": user_obj_id})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+
+    # Kiểm tra trùng email (ngoại trừ chính user này)
+    if email:
+        dup_email = await users_collection.find_one(
+            {"email": email, "_id": {"$ne": user_obj_id}}
+        )
+        if dup_email:
+            raise HTTPException(status_code=400, detail="Email đã tồn tại!")
+
+    # Kiểm tra trùng mã sinh viên (nếu có, ngoại trừ chính user này)
+    if student_id:
+        dup_student = await users_collection.find_one(
+            {"student_id": student_id, "_id": {"$ne": user_obj_id}}
+        )
+        if dup_student:
+            raise HTTPException(status_code=400, detail="Mã sinh viên đã tồn tại!")
+
+    update_fields = {
+        "name": name,
+        "email": email,
+        "student_id": student_id,
+    }
+    if role:
+        update_fields["role"] = role
+
+    await users_collection.update_one(
+        {"_id": user_obj_id},
+        {"$set": update_fields},
+    )
+
+    updated_user = await users_collection.find_one(
+        {"_id": user_obj_id}, {"password": 0}
+    )
+    return {"success": True, "user": serialize_doc(updated_user)}
+
+
+@app.post("/api/delete-user")
+async def delete_user(data: dict):
+    """
+    Xóa tài khoản theo id.
+    Body: { id }
+    """
+    user_id = data.get("id")
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="ID người dùng không hợp lệ.")
+
+    user_obj_id = ObjectId(user_id)
+    user = await users_collection.find_one({"_id": user_obj_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+
+    # (Optionally có thể chặn xóa admin tại đây)
+    # if user.get("role") == "admin":
+    #     raise HTTPException(status_code=403, detail="Không thể xóa tài khoản admin.")
+
+    await users_collection.delete_one({"_id": user_obj_id})
+    return {"success": True}
+
+@app.post("/api/toggle-user-status")
+async def toggle_user_status(data: dict):
+    """
+    Chuyển đổi trạng thái hoạt động của tài khoản.
+    Body: { "id": "user_id" }
+    """
+    user_id_str = data.get("id")
+
+    print("Received user_id:", user_id_str)
+    print("Type:", type(user_id_str))
+
+    if not user_id_str or not ObjectId.is_valid(user_id_str):
+        raise HTTPException(status_code=400, detail="ID người dùng không hợp lệ.")
+
+    # Tạo ObjectId MỘT LẦN DUY NHẤT
+    user_obj_id = ObjectId(user_id_str)
+
+    # Dùng cùng một object_id cho cả find và update
+    user = await users_collection.find_one({"_id": user_obj_id})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+
+    print("Found user:", user)  # Thêm dòng này để debug
+
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Không thể thay đổi trạng thái tài khoản admin.")
+
+    new_status = not user.get("is_active", True)
+
+    # Dùng cùng user_obj_id để update
+    result = await users_collection.update_one(
+        {"_id": user_obj_id},
+        {"$set": {"is_active": new_status}}
+    )
+
+    # QUAN TRỌNG: Kiểm tra xem có update thành công không
+    print("Update result:", result.modified_count)
+
+    if result.modified_count == 0:
+        # Có thể do document không thay đổi (ví dụ status đã là new_status)
+        # Hoặc do không match (hiếm)
+        pass  # vẫn return success, vì request hợp lệ
+
+    return {"success": True, "new_status": new_status}
 @app.post("/api/login")
 async def login_user(data: dict):
     email = data.get("email", "").strip().lower()
@@ -1458,6 +1302,92 @@ async def login_user(data: dict):
         "success": True,
         "message": "Đăng nhập thành công!",
         "user": serialize_doc(user),
+    }
+
+
+@app.post("/api/check-face-registration-status")
+async def check_face_registration_status(data: dict):
+    """
+    Kiểm tra trạng thái đăng ký khuôn mặt của sinh viên.
+    Input: { "student_id": "MSSV..." }
+    Trả về:
+      - status: "pending" | "processing" | "completed" | "failed"
+      - can_join_exam: bool
+    """
+    student_id = data.get("student_id", "").strip().upper()
+
+    if not student_id:
+        raise HTTPException(status_code=400, detail="Thiếu student_id.")
+
+    user = await users_collection.find_one({"student_id": student_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sinh viên.")
+
+    status = user.get("face_processing_status")
+
+    # Nếu chưa có trạng thái nhưng đã có ảnh khuôn mặt → coi như đã hoàn tất
+    if not status:
+        if user.get("face_image"):
+            status = "completed"
+        else:
+            status = "pending"
+
+    can_join_exam = status == "completed" and bool(user.get("face_image"))
+
+    return {
+        "success": True,
+        "status": status,
+        "can_join_exam": can_join_exam,
+    }
+
+
+@app.post("/api/change-password")
+async def change_password(data: dict):
+    """
+    Đổi mật khẩu cho user
+    data: {
+        user_id: str,           # ID người dùng
+        current_password: str,  # Mật khẩu hiện tại
+        new_password: str       # Mật khẩu mới
+    }
+    """
+    user_id = data.get("user_id", "").strip()
+    current_password = data.get("current_password", "")
+    new_password = data.get("new_password", "")
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="ID người dùng không hợp lệ.")
+
+    if not current_password or not new_password:
+        raise HTTPException(status_code=400, detail="Vui lòng nhập đầy đủ mật khẩu hiện tại và mật khẩu mới.")
+
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự.")
+
+    # Lấy thông tin user
+    user_obj_id = ObjectId(user_id)
+    user = await users_collection.find_one({"_id": user_obj_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+
+    # Kiểm tra mật khẩu hiện tại
+    current_password_trimmed = current_password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+    if not bcrypt.verify(current_password_trimmed, user["password"]):
+        raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không chính xác.")
+
+    # Hash mật khẩu mới
+    new_password_trimmed = new_password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+    hashed_new_password = bcrypt.using(rounds=12).hash(new_password_trimmed)
+
+    # Cập nhật mật khẩu
+    await users_collection.update_one(
+        {"_id": user_obj_id},
+        {"$set": {"password": hashed_new_password}}
+    )
+
+    return {
+        "success": True,
+        "message": "Đổi mật khẩu thành công!"
     }
 
 
@@ -1613,7 +1543,7 @@ async def get_classes(data: dict):
 async def join_class(data: dict):
     class_id = data.get("class_id", "").strip()
     student_id = data.get("student_id", "").strip()
-    password = data.get("password", "").strip()
+    # Bỏ password - tất cả lớp đều do admin quản lý
 
     if not class_id or not student_id:
         raise HTTPException(status_code=400, detail="Thiếu class_id hoặc student_id.")
@@ -1622,11 +1552,7 @@ async def join_class(data: dict):
     if not class_doc:
         raise HTTPException(status_code=404, detail="Không tìm thấy lớp học.")
 
-    # lớp private phải nhập đúng password
-    if class_doc["visibility"] == "private" and class_doc["password"] != password:
-        raise HTTPException(status_code=403, detail="Mật khẩu lớp không đúng.")
-
-    # Thêm student nếu chưa tồn tại
+    # Thêm student nếu chưa tồn tại (không cần check password)
     if student_id not in class_doc.get("students", []):
         await classes_collection.update_one(
             {"_id": ObjectId(class_id)},
@@ -1727,6 +1653,269 @@ async def get_exams_by_class(data: dict):
 # ================================
 # 🧩 Lấy danh sách sinh viên
 # ================================
+@app.post("/api/get-users")
+async def get_users(data: dict = {}):
+    """
+    Lấy danh sách tất cả users (giảng viên và sinh viên) hoặc filter theo role.
+    data: { role?: 'teacher'|'student' } - Nếu không có role thì lấy tất cả
+    """
+    role = data.get("role", "").strip()
+    
+    # Xây dựng query
+    query = {}
+    if role and role in ["teacher", "student"]:
+        query["role"] = role
+    
+    # Lấy users (không bao gồm password) - sử dụng projection để loại bỏ password ngay từ query
+    users = []
+    async for user in users_collection.find(query, {"password": 0}):  # projection: loại bỏ password
+        users.append(serialize_doc(user))
+    
+    return {"success": True, "users": users}
+
+
+# ================================
+# 🎓 ADMIN: Quản lý môn học (subjects/classes)
+# ================================
+
+@app.post("/api/admin/get-all-classes")
+async def admin_get_all_classes(data: dict = {}):
+    """
+    Admin: Lấy tất cả lớp học (môn học) trong hệ thống
+    """
+    classes = []
+    async for cls in classes_collection.find({}):
+        classes.append(serialize_class(cls))
+    
+    return {"success": True, "classes": classes}
+
+
+@app.post("/api/admin/create-subject")
+async def admin_create_subject(data: dict):
+    """
+    Admin: Tạo môn học và phân giảng viên
+    data: {
+        name: str,          # Tên môn học
+        code: str,          # Mã môn học
+        teacher_id: str,    # ID giảng viên được phân công
+        description?: str  # Mô tả (optional)
+    }
+    """
+    name = data.get("name", "").strip()
+    code = data.get("code", "").strip()
+    teacher_id = data.get("teacher_id", "").strip()
+    description = data.get("description", "").strip()
+
+    if not name or not code or not teacher_id:
+        raise HTTPException(status_code=400, detail="Thiếu tên môn học, mã môn học hoặc ID giảng viên.")
+
+    # Kiểm tra giảng viên tồn tại
+    teacher = await users_collection.find_one({"_id": ObjectId(teacher_id), "role": "teacher"})
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giảng viên hợp lệ.")
+
+    # Kiểm tra trùng mã môn học
+    existing_code = await classes_collection.find_one({"code": code})
+    if existing_code:
+        raise HTTPException(status_code=400, detail="Mã môn học đã tồn tại.")
+
+    # Tạo môn học (lớp học) với giảng viên được phân công
+    new_subject = {
+        "name": name,
+        "code": code,
+        "teacher_id": teacher_id,
+        "teacher_name": teacher["name"],
+        "visibility": "public",  # Môn học admin tạo mặc định là public
+        "password": "",
+        "students": [],
+        "description": description,
+        "created_by_admin": True,  # Đánh dấu do admin tạo
+        "created_at": datetime.utcnow(),
+    }
+
+    result = await classes_collection.insert_one(new_subject)
+    inserted = await classes_collection.find_one({"_id": result.inserted_id})
+
+    # Realtime broadcast cho students
+    try:
+        await broadcast_class_event({
+            "type": "class_created",
+            "class": serialize_class(inserted)
+        })
+    except Exception as e:
+        print("⚠ Lỗi broadcast môn học mới:", e)
+
+    # Gửi thông báo tới giảng viên được phân công
+    try:
+        # WebSocket notification
+        notification_event = {
+            "type": "assigned_to_subject",
+            "subject": serialize_class(inserted),
+            "message": f"Bạn đã được phân công giảng dạy môn học: {name} ({code})",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await notify_teacher(teacher_id, notification_event)
+        
+        # Email notification
+        teacher_email = teacher.get("email")
+        if teacher_email:
+            email_subject = f"Phân công giảng dạy môn học: {name}"
+            email_body_html = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #2563eb;">Thông báo phân công giảng dạy</h2>
+                    <p>Xin chào <strong>{teacher['name']}</strong>,</p>
+                    <p>Bạn đã được phân công giảng dạy môn học mới:</p>
+                    <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>Tên môn học:</strong> {name}</p>
+                        <p style="margin: 5px 0;"><strong>Mã môn học:</strong> {code}</p>
+                        {f'<p style="margin: 5px 0;"><strong>Mô tả:</strong> {description}</p>' if description else ''}
+                    </div>
+                    <p>Vui lòng đăng nhập vào hệ thống để xem chi tiết và quản lý môn học.</p>
+                    <p style="color: #6b7280; font-size: 12px; margin-top: 30px;">
+                        Đây là email tự động từ hệ thống Online Exam System.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+            email_body_text = f"""
+Thông báo phân công giảng dạy
+
+Xin chào {teacher['name']},
+
+Bạn đã được phân công giảng dạy môn học mới:
+- Tên môn học: {name}
+- Mã môn học: {code}
+{f'- Mô tả: {description}' if description else ''}
+
+Vui lòng đăng nhập vào hệ thống để xem chi tiết và quản lý môn học.
+            """
+            await send_email_notification(teacher_email, email_subject, email_body_html, email_body_text)
+    except Exception as e:
+        print(f"⚠ Lỗi gửi thông báo tới giảng viên: {e}")
+
+    return {"success": True, "subject": serialize_class(inserted)}
+
+
+@app.post("/api/admin/get-all-teachers")
+async def admin_get_all_teachers(data: dict = {}):
+    """
+    Admin: Lấy danh sách tất cả giảng viên để phân công
+    """
+    teachers = []
+    async for teacher in users_collection.find({"role": "teacher"}, {"password": 0}):
+        teachers.append(serialize_doc(teacher))
+    
+    return {"success": True, "teachers": teachers}
+
+
+@app.post("/api/admin/update-subject-teacher")
+async def admin_update_subject_teacher(data: dict):
+    """
+    Admin: Cập nhật giảng viên cho môn học đã tồn tại
+    data: {
+        class_id: str,      # ID môn học (lớp học)
+        teacher_id: str,    # ID giảng viên mới được phân công
+    }
+    """
+    class_id = data.get("class_id", "").strip()
+    new_teacher_id = data.get("teacher_id", "").strip()
+
+    if not class_id or not new_teacher_id:
+        raise HTTPException(status_code=400, detail="Thiếu class_id hoặc teacher_id.")
+
+    if not ObjectId.is_valid(class_id) or not ObjectId.is_valid(new_teacher_id):
+        raise HTTPException(status_code=400, detail="ID không hợp lệ.")
+
+    # Kiểm tra môn học tồn tại
+    class_doc = await classes_collection.find_one({"_id": ObjectId(class_id)})
+    if not class_doc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy môn học.")
+
+    # Kiểm tra giảng viên mới tồn tại
+    new_teacher = await users_collection.find_one({"_id": ObjectId(new_teacher_id), "role": "teacher"})
+    if not new_teacher:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giảng viên hợp lệ.")
+
+    # Lấy giảng viên cũ (nếu có)
+    old_teacher_id = class_doc.get("teacher_id")
+    old_teacher = None
+    if old_teacher_id and old_teacher_id != new_teacher_id:
+        old_teacher = await users_collection.find_one({"_id": ObjectId(old_teacher_id), "role": "teacher"})
+
+    # Cập nhật giảng viên cho môn học
+    await classes_collection.update_one(
+        {"_id": ObjectId(class_id)},
+        {
+            "$set": {
+                "teacher_id": new_teacher_id,
+                "teacher_name": new_teacher["name"]
+            }
+        }
+    )
+
+    updated_class = await classes_collection.find_one({"_id": ObjectId(class_id)})
+
+    # Gửi thông báo tới giảng viên mới được phân công
+    try:
+        # WebSocket notification cho giảng viên mới
+        notification_event = {
+            "type": "assigned_to_subject",
+            "subject": serialize_class(updated_class),
+            "message": f"Bạn đã được phân công giảng dạy môn học: {updated_class.get('name')} ({updated_class.get('code')})",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await notify_teacher(new_teacher_id, notification_event)
+        
+        # Email notification cho giảng viên mới
+        new_teacher_email = new_teacher.get("email")
+        if new_teacher_email:
+            subject_name = updated_class.get("name", "")
+            subject_code = updated_class.get("code", "")
+            description = updated_class.get("description", "")
+            
+            email_subject = f"Phân công giảng dạy môn học: {subject_name}"
+            email_body_html = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #2563eb;">Thông báo phân công giảng dạy</h2>
+                    <p>Xin chào <strong>{new_teacher['name']}</strong>,</p>
+                    <p>Bạn đã được phân công giảng dạy môn học:</p>
+                    <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>Tên môn học:</strong> {subject_name}</p>
+                        <p style="margin: 5px 0;"><strong>Mã môn học:</strong> {subject_code}</p>
+                        {f'<p style="margin: 5px 0;"><strong>Mô tả:</strong> {description}</p>' if description else ''}
+                    </div>
+                    <p>Vui lòng đăng nhập vào hệ thống để xem chi tiết và quản lý môn học.</p>
+                    <p style="color: #6b7280; font-size: 12px; margin-top: 30px;">
+                        Đây là email tự động từ hệ thống Online Exam System.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+            email_body_text = f"""
+Thông báo phân công giảng dạy
+
+Xin chào {new_teacher['name']},
+
+Bạn đã được phân công giảng dạy môn học:
+- Tên môn học: {subject_name}
+- Mã môn học: {subject_code}
+{f'- Mô tả: {description}' if description else ''}
+
+Vui lòng đăng nhập vào hệ thống để xem chi tiết và quản lý môn học.
+            """
+            await send_email_notification(new_teacher_email, email_subject, email_body_html, email_body_text)
+    except Exception as e:
+        print(f"⚠ Lỗi gửi thông báo tới giảng viên mới: {e}")
+
+    return {"success": True, "class": serialize_class(updated_class)}
+
+
 @app.post("/api/get-students")
 async def get_students(data: dict = {}):
     """
@@ -1746,6 +1935,41 @@ async def get_students(data: dict = {}):
     else:
         # Lấy tất cả sinh viên
         students_cursor = users_collection.find({"role": "student"})
+
+    students = []
+    async for stu in students_cursor:
+        students.append(serialize_doc(stu))
+
+    return {"success": True, "students": students}
+
+
+@app.post("/api/get-students-in-class")
+async def get_students_in_class(data: dict):
+    class_id = data.get("class_id")
+
+    if not class_id or not ObjectId.is_valid(class_id):
+        raise HTTPException(status_code=400, detail="Class ID không hợp lệ")
+
+    # Lấy thông tin lớp
+    cls = await classes_collection.find_one({"_id": ObjectId(class_id)})
+    if not cls:
+        raise HTTPException(status_code=404, detail="Lớp học không tồn tại")
+
+    # Danh sách ID sinh viên (string)
+    class_student_ids = cls.get("students", [])
+
+    # Nếu lớp rỗng → trả về danh sách trống
+    if not class_student_ids:
+        return {"success": True, "students": []}
+
+    # Chuyển sang ObjectId
+    object_ids_in_class = [ObjectId(sid) for sid in class_student_ids]
+
+    # 🔥 Truy vấn tất cả sinh viên TRONG lớp
+    students_cursor = users_collection.find({
+        "role": "student",
+        "_id": {"$in": object_ids_in_class}
+    })
 
     students = []
     async for stu in students_cursor:
@@ -1973,6 +2197,9 @@ async def get_class_by_id(payload: dict):
 
 active_class_clients = []
 
+# WebSocket clients cho giảng viên (theo teacher_id)
+active_teacher_clients = {}  # {teacher_id: [websocket1, websocket2, ...]}
+
 @app.websocket("/ws/classes")
 async def ws_classes(websocket: WebSocket):
     await websocket.accept()
@@ -2001,6 +2228,128 @@ async def broadcast_class_event(event: dict):
     for ws in dead:
         if ws in active_class_clients:
             active_class_clients.remove(ws)
+
+
+# ==========================
+# ✅ WS: THÔNG BÁO CHO GIẢNG VIÊN
+# ==========================
+@app.websocket("/ws/teachers/notifications")
+async def ws_teachers_notifications(websocket: WebSocket):
+    """WebSocket endpoint cho giảng viên nhận thông báo"""
+    teacher_id = websocket.query_params.get("teacher_id", "").strip()
+    
+    if not teacher_id:
+        await websocket.close(code=1008, reason="Missing teacher_id")
+        return
+    
+    await websocket.accept()
+    
+    # Thêm websocket vào danh sách của giảng viên này
+    if teacher_id not in active_teacher_clients:
+        active_teacher_clients[teacher_id] = []
+    active_teacher_clients[teacher_id].append(websocket)
+    
+    print(f"✅ Teacher {teacher_id} connected to notifications")
+    
+    try:
+        while True:
+            await asyncio.sleep(1)  # Giữ kết nối
+    except WebSocketDisconnect:
+        print(f"❌ Teacher {teacher_id} disconnected from notifications")
+    finally:
+        # Xóa websocket khỏi danh sách
+        if teacher_id in active_teacher_clients:
+            if websocket in active_teacher_clients[teacher_id]:
+                active_teacher_clients[teacher_id].remove(websocket)
+            # Xóa key nếu không còn websocket nào
+            if len(active_teacher_clients[teacher_id]) == 0:
+                del active_teacher_clients[teacher_id]
+
+
+async def notify_teacher(teacher_id: str, event: dict):
+    """Gửi thông báo tới giảng viên cụ thể qua WebSocket"""
+    if teacher_id not in active_teacher_clients:
+        return  # Giảng viên không online
+    
+    dead_ws = []
+    for ws in active_teacher_clients[teacher_id]:
+        try:
+            await ws.send_json(event)
+        except:
+            dead_ws.append(ws)
+    
+    # Xóa các websocket đã chết
+    for ws in dead_ws:
+        if ws in active_teacher_clients[teacher_id]:
+            active_teacher_clients[teacher_id].remove(ws)
+    
+    if len(active_teacher_clients[teacher_id]) == 0:
+        del active_teacher_clients[teacher_id]
+
+
+# ==========================
+# ✅ GỬI EMAIL
+# ==========================
+async def send_email_notification(to_email: str, subject: str, body_html: str, body_text: str = ""):
+    """
+    Gửi email thông báo
+    Cấu hình SMTP từ biến môi trường:
+    - SMTP_SERVER: smtp.gmail.com (mặc định)
+    - SMTP_PORT: 587 (mặc định)
+    - SMTP_USER: email gửi (từ biến môi trường EMAIL_USER)
+    - SMTP_PASSWORD: mật khẩu/app password (từ biến môi trường EMAIL_PASSWORD)
+    
+    Nếu không cấu hình, sẽ chỉ log ra console.
+    """
+    try:
+        # Đọc từ biến môi trường hoặc dùng giá trị mặc định
+        SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+        SMTP_USER = os.getenv("EMAIL_USER", "giangnguyendev99@gmail.com")
+        SMTP_PASSWORD = os.getenv("EMAIL_PASSWORD", "rngi fbkb ogby puvt")
+        
+        # Nếu không cấu hình email, chỉ log và không gửi
+        if not SMTP_USER or not SMTP_PASSWORD:
+            print(f"⚠ Email không được cấu hình. Thông báo sẽ được gửi tới: {to_email}")
+            print(f"   Subject: {subject}")
+            print(f"   Body: {body_text[:200]}...")
+            print(f"   💡 Để gửi email, hãy cấu hình biến môi trường EMAIL_USER và EMAIL_PASSWORD")
+            return True  # Trả về True để không làm gián đoạn flow
+        
+        # Tạo message
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_USER
+        msg["To"] = to_email
+        
+        # Thêm text và HTML
+        if body_text:
+            part1 = MIMEText(body_text, "plain", "utf-8")
+            msg.attach(part1)
+        
+        part2 = MIMEText(body_html, "html", "utf-8")
+        msg.attach(part2)
+        
+        # Gửi email (chạy trong thread pool để không block)
+        def send_sync():
+            try:
+                server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+                server.quit()
+                print(f"✅ Email đã gửi tới {to_email}")
+            except Exception as e:
+                print(f"❌ Lỗi gửi email tới {to_email}: {e}")
+        
+        # Chạy trong thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, send_sync)
+        
+        return True
+    except Exception as e:
+        print(f"❌ Lỗi khi gửi email: {e}")
+        return False
 
 
 # ==========================
@@ -2052,10 +2401,19 @@ async def get_violations(data: dict):
 
             
             # Lấy các vi phạm liên quan (exam code + class code)
-            violates_cursor = violates_collection.find({
-                "exam_id": exam_id_str,
-                "class_id": cls_id_str
-            })
+            # violates_cursor = violates_collection.find({
+            #     "exam_id": exam_id_str,
+            #     "class_id": cls_id_str
+            # })
+            violates_cursor = (
+                violates_collection
+                .find({
+                    "exam_id": exam_id_str,
+                    "class_id": cls_id_str
+                })
+                .sort("timestamp", -1)
+            )
+
             violations = await violates_cursor.to_list(length=None)
             print(violations)
             violations_serialized = [serialize_doc2(v) for v in violations]
@@ -2083,7 +2441,12 @@ async def get_student_violations(data: dict):
         raise HTTPException(status_code=400, detail="Student code không hợp lệ")
 
     # Lấy tất cả vi phạm của sinh viên
-    violations_cursor = violates_collection.find({"student": student_code})
+    # violations_cursor = violates_collection.find({"student": student_code})
+    violations_cursor = (
+        violates_collection
+        .find({"student": student_code})
+        .sort("timestamp", -1)  
+    )
     violations = await violations_cursor.to_list(length=None)
 
     detailed_violations = []
@@ -2120,7 +2483,7 @@ async def create_exam_session(payload: dict):
     print(payload)
     exam_id = payload.get("exam_id")
     name = payload.get("name")
-    start_time = payload.get("start_time")
+    start_time_str = payload.get("start_time")
     duration = payload.get("duration")
 
 
@@ -2129,6 +2492,44 @@ async def create_exam_session(payload: dict):
 
     if not ObjectId.is_valid(exam_id):
         raise HTTPException(status_code=400, detail="Exam ID không hợp lệ")
+
+    # Xử lý start_time: convert từ string sang datetime UTC
+    start_time = None
+    if start_time_str:
+        try:
+            # Xử lý cả datetime-local format (YYYY-MM-DDTHH:MM) và ISO format
+            if isinstance(start_time_str, str):
+                # Parse datetime từ string
+                parsed_time = datetime.fromisoformat(start_time_str)
+                # Nếu là naive datetime (không có timezone), giả định là local time UTC+7 và convert sang UTC
+                if parsed_time.tzinfo is None:
+                    # Giả định input từ datetime-local là local time UTC+7 (Vietnam timezone)
+                    # Tạo timezone UTC+7
+                    vietnam_tz = timezone(timedelta(hours=7))
+                    # Gán timezone UTC+7 cho parsed_time
+                    local_time = parsed_time.replace(tzinfo=vietnam_tz)
+                    # Convert sang UTC và remove timezone info để lưu vào DB
+                    start_time = local_time.astimezone(timezone.utc).replace(tzinfo=None)
+                    print(f"[DEBUG] Converted start_time: {start_time_str} (local UTC+7) -> {start_time} (UTC)")
+                else:
+                    # Nếu đã có timezone, convert sang UTC
+                    start_time = parsed_time.astimezone(timezone.utc).replace(tzinfo=None)
+            elif isinstance(start_time_str, datetime):
+                # Nếu đã là datetime object
+                if start_time_str.tzinfo is None:
+                    # Naive datetime, giả định là local time UTC+7 và convert sang UTC
+                    vietnam_tz = timezone(timedelta(hours=7))
+                    local_time = start_time_str.replace(tzinfo=vietnam_tz)
+                    start_time = local_time.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    # Có timezone, convert sang UTC
+                    start_time = start_time_str.astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception as e:
+            print(f"[ERROR] Lỗi parse start_time: {start_time_str}, error: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Thời gian bắt đầu không hợp lệ: {start_time_str}"
+            )
 
     session = {
         "exam_id": exam_id,
@@ -2158,34 +2559,6 @@ async def get_exam_sessions(data: dict):
         sessions.append(ses)
 
     return {"success": True, "sessions": sessions}
-
-# @app.post("/api/exam-session/add-students")
-# async def add_students_to_exam_session(payload: dict):
-#     session_id = payload.get("session_id")
-#     student_ids = payload.get("student_ids", [])
-
-#     if not ObjectId.is_valid(session_id):
-#         raise HTTPException(status_code=400, detail="Session ID không hợp lệ")
-
-#     if not isinstance(student_ids, list):
-#         raise HTTPException(status_code=400, detail="Danh sách sinh viên phải là list")
-
-#     # Convert sang ObjectId
-#     oid_students = []
-#     for sid in student_ids:
-#         if ObjectId.is_valid(sid):
-#             oid_students.append(ObjectId(sid))
-
-#     # Thêm vào session (không trùng)
-#     result = await exam_sessions_collection.update_one(
-#         {"_id": ObjectId(session_id)},
-#         {"$addToSet": {"students": {"$each": oid_students}}},
-#     )
-
-#     if result.modified_count == 0:
-#         return {"success": False, "detail": "Không có thay đổi hoặc session không tồn tại"}
-
-#     return {"success": True, "added": len(oid_students)}
 
 @app.post("/api/exam-session/add-students")
 async def add_students_to_exam_session(payload: dict):
@@ -2224,17 +2597,89 @@ async def add_students_to_exam_session(payload: dict):
     
     exam_id = str(session_doc.get("exam_id"))
     exam_doc = await exams_collection.find_one({"_id": ObjectId(exam_id)})
+    
+    # Lấy thông tin lớp học để có tên lớp
+    class_id = exam_doc.get("class_id") if exam_doc else None
+    class_doc = None
+    if class_id:
+        class_doc = await classes_collection.find_one({"_id": ObjectId(class_id)})
 
-    # --- Broadcast tới sinh viên ---
+    # --- Broadcast tới sinh viên (thông báo chuông) ---
     if exam_id:
         await broadcast_session_update({
         "type": "added_to_session",
         "exam_id": exam_id,
         "session_id": session_id,
         "student_ids": [str(s) for s in oid_students],
-        "nameExam": exam_doc.get("name"),
+        "nameExam": exam_doc.get("name") if exam_doc else "",
         "nameSession": session_doc.get("name"),
     })
+
+    # --- Gửi email cho từng sinh viên được phân vào ca thi ---
+    try:
+        for student_oid in oid_students:
+            student = await users_collection.find_one({"_id": student_oid, "role": "student"})
+            if student and student.get("email"):
+                student_email = student.get("email")
+                student_name = student.get("name", "Sinh viên")
+                exam_name = exam_doc.get("name") if exam_doc else "Kỳ thi"
+                session_name = session_doc.get("name", "Ca thi")
+                class_name = class_doc.get("name") if class_doc else ""
+                
+                # Format thời gian ca thi
+                session_start_time = session_doc.get("start_time")
+                session_duration = session_doc.get("duration")
+                time_info = ""
+                if session_start_time:
+                    try:
+                        if isinstance(session_start_time, str):
+                            start_dt = datetime.fromisoformat(session_start_time.replace('Z', '+00:00'))
+                        else:
+                            start_dt = session_start_time
+                        time_info = f"<p style=\"margin: 5px 0;\"><strong>Thời gian bắt đầu:</strong> {start_dt.strftime('%d/%m/%Y %H:%M')}</p>"
+                    except:
+                        pass
+                if session_duration:
+                    time_info += f"<p style=\"margin: 5px 0;\"><strong>Thời lượng:</strong> {session_duration} phút</p>"
+                
+                email_subject = f"Thông báo phân ca thi: {session_name}"
+                email_body_html = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                        <h2 style="color: #2563eb;">Thông báo phân ca thi</h2>
+                        <p>Xin chào <strong>{student_name}</strong>,</p>
+                        <p>Bạn đã được phân vào ca thi mới:</p>
+                        <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                            <p style="margin: 5px 0;"><strong>Kỳ thi:</strong> {exam_name}</p>
+                            <p style="margin: 5px 0;"><strong>Ca thi:</strong> {session_name}</p>
+                            {f'<p style="margin: 5px 0;"><strong>Môn học:</strong> {class_name}</p>' if class_name else ''}
+                            {time_info}
+                        </div>
+                        <p>Vui lòng đăng nhập vào hệ thống để xem chi tiết và chuẩn bị cho ca thi.</p>
+                        <p style="color: #6b7280; font-size: 12px; margin-top: 30px;">
+                            Đây là email tự động từ hệ thống Online Exam System.
+                        </p>
+                    </div>
+                </body>
+                </html>
+                """
+                email_body_text = f"""
+Thông báo phân ca thi
+
+Xin chào {student_name},
+
+Bạn đã được phân vào ca thi mới:
+- Kỳ thi: {exam_name}
+- Ca thi: {session_name}
+{f'- Lớp học: {class_name}' if class_name else ''}
+{time_info.replace('<p style="margin: 5px 0;"><strong>', '').replace('</strong>', '').replace('</p>', '') if time_info else ''}
+
+Vui lòng đăng nhập vào hệ thống để xem chi tiết và chuẩn bị cho ca thi.
+                """
+                await send_email_notification(student_email, email_subject, email_body_html, email_body_text)
+    except Exception as e:
+        print(f"⚠ Lỗi gửi email thông báo ca thi: {e}")
 
     return {"success": True, "added": len(oid_students)}
 
@@ -2312,4 +2757,447 @@ async def remove_student_from_session(payload: dict):
     )
 
     return {"success": True, "removed": result.modified_count}
+
+
+# @app.post("/api/student/current-sessions")
+# async def get_student_current_sessions(data: dict):
+#     """
+#     Lấy các ca thi hiện tại mà sinh viên có thể tham gia.
+#     Ca thi được coi là "hiện tại" nếu:
+#     - Sinh viên có trong danh sách students của session
+#     - Ca thi chưa kết thúc và sắp diễn ra trong 24 giờ tới
+#     Logic thời gian:
+#     - Trước start_time: "Chưa đến thời gian thi"
+#     - Từ start_time đến start_time + 15 phút: "Vào phòng thi"
+#     - Sau start_time + 15 phút nhưng chưa kết thúc: "Đã quá thời gian vào phòng thi"
+#     - Sau end_time: "Đã kết thúc"
+#     """
+#     student_id = data.get("student_id")
+    
+#     if not student_id or not ObjectId.is_valid(student_id):
+#         raise HTTPException(status_code=400, detail="Student ID không hợp lệ")
+    
+#     student_obj_id = ObjectId(student_id)
+#     now = datetime.utcnow() + timedelta(hours=7)
+
+    
+#     # Tìm tất cả sessions mà sinh viên tham gia
+#     sessions_cursor = exam_sessions_collection.find({
+#         "students": student_obj_id
+#     })
+    
+#     print(f"[DEBUG] Tìm ca thi cho student_id: {student_id}")
+#     session_count = 0
+#     current_sessions = []
+    
+#     async for session in sessions_cursor:
+#         session_count += 1
+#         print(f"[DEBUG] Session {session_count}: {session.get('name')}, start_time={session.get('start_time')}, students={session.get('students')}")
+#         start_time = session.get("start_time")
+#         if not start_time:
+#             print(f"[DEBUG] Session {session.get('name')} không có start_time, bỏ qua")
+#             continue
+        
+#         # Chuyển start_time sang datetime UTC
+#         # Nếu start_time là string không có timezone (như "2025-12-17T23:10"),
+#         # giả định đó là local time UTC+7 và convert sang UTC
+#         # Nếu start_time là datetime object từ DB, có thể đã được convert sang UTC khi tạo
+        
+#         if isinstance(start_time, str):
+#             try:
+#                 # Xử lý cả UTC và local time
+#                 if start_time.endswith('Z'):
+#                     # Có timezone UTC
+#                     parsed = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+#                     start_time = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+#                 elif '+' in start_time or start_time.count('-') > 2:
+#                     # Có timezone info (như +07:00)
+#                     parsed = datetime.fromisoformat(start_time)
+#                     start_time = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+#                 else:
+#                     # String không có timezone (như "2025-12-17T23:10")
+#                     # Giả định là local time UTC+7 và convert sang UTC
+#                     parsed = datetime.fromisoformat(start_time)
+#                     vietnam_tz = timezone(timedelta(hours=7))
+#                     local_time = parsed.replace(tzinfo=vietnam_tz)
+#                     start_time = local_time.astimezone(timezone.utc).replace(tzinfo=None)
+#                     print(f"[DEBUG] Converted start_time string (UTC+7 -> UTC): {parsed} -> {start_time}")
+#             except Exception as e:
+#                 print(f"[DEBUG] Lỗi parse start_time: {start_time}, error: {e}")
+#                 continue
+#         elif isinstance(start_time, datetime):
+#             # Nếu đã là datetime object
+#             if start_time.tzinfo is not None:
+#                 # Nếu có timezone, convert sang UTC và remove timezone info
+#                 start_time = start_time.astimezone(timezone.utc).replace(tzinfo=None)
+#             else:
+#                 # Naive datetime từ DB
+#                 # Kiểm tra xem có phải là UTC hay local time bằng cách so sánh với thời gian hiện tại
+#                 # Nếu start_time > now + 12h, có thể là local time (UTC+7)
+#                 # Để an toàn, giả định tất cả naive datetime là local time UTC+7
+#                 vietnam_tz = timezone(timedelta(hours=7))
+#                 local_time = start_time.replace(tzinfo=vietnam_tz)
+#                 start_time = local_time.astimezone(timezone.utc).replace(tzinfo=None)
+#                 print(f"[DEBUG] Converted start_time datetime (assumed UTC+7 -> UTC): {start_time}")
+#         else:
+#             continue
+        
+#         duration = session.get("duration", 0)  # duration tính bằng phút
+        
+#         # Đảm bảo cả start_time và now đều là UTC naive datetime để so sánh chính xác
+#         # start_time từ DB có thể là naive datetime (giả định là UTC)
+#         # now là datetime.utcnow() cũng là UTC naive datetime
+#         start_ms = start_time.timestamp() * 1000
+#         end_ms = start_ms + duration * 60 * 1000
+#         now_ms = now.timestamp() * 1000
+        
+#         # Mở rộng: Hiển thị tất cả ca thi chưa kết thúc hoặc sắp diễn ra trong 24 giờ tới
+#         # Hiển thị nếu:
+#         # 1. Ca thi chưa kết thúc (now_ms <= end_ms) VÀ
+#         # 2. Ca thi sắp diễn ra hoặc đang diễn ra (start_ms <= now_ms + 24h)
+#         future_limit = now_ms + 24 * 60 * 60 * 1000  # 24 giờ tới
+        
+#         # Debug log chi tiết để kiểm tra timezone
+#         print(f"[DEBUG] Session {session.get('name')}:")
+#         print(f"  - start_time (raw from DB): {session.get('start_time')} (type: {type(session.get('start_time'))})")
+#         print(f"  - start_time (parsed): {start_time} (type: {type(start_time)}, tzinfo: {start_time.tzinfo})")
+#         print(f"  - now (UTC): {now} (type: {type(now)}, tzinfo: {now.tzinfo})")
+#         print(f"  - start_ms: {start_ms} ({datetime.fromtimestamp(start_ms/1000)})")
+#         print(f"  - now_ms: {now_ms} ({datetime.fromtimestamp(now_ms/1000)})")
+#         print(f"  - end_ms: {end_ms} ({datetime.fromtimestamp(end_ms/1000)})")
+#         print(f"  - Comparison: now_ms ({now_ms}) < start_ms ({start_ms})? {now_ms < start_ms}")
+#         print(f"  - Condition: now_ms <= end_ms? {now_ms <= end_ms}, start_ms <= future_limit? {start_ms <= future_limit}")
+        
+#         # Chỉ trả về ca thi đang trong thời gian có thể vào thi
+#         # (từ start_time đến start_time + 15 phút)
+#         can_enter_start = start_ms
+#         can_enter_end = start_ms + 15 * 60 * 1000  # 15 phút sau start_time
+        
+#         # Debug log chi tiết để kiểm tra timezone
+#         print(f"[DEBUG] Session {session.get('name')}:")
+#         print(f"  - start_time (raw from DB): {session.get('start_time')} (type: {type(session.get('start_time'))})")
+#         print(f"  - start_time (parsed): {start_time} (type: {type(start_time)}, tzinfo: {start_time.tzinfo})")
+#         print(f"  - now (UTC): {now} (type: {type(now)}, tzinfo: {now.tzinfo})")
+#         print(f"  - start_ms: {start_ms} ({datetime.fromtimestamp(start_ms/1000)})")
+#         print(f"  - now_ms: {now_ms} ({datetime.fromtimestamp(now_ms/1000)})")
+#         print(f"  - can_enter_start: {can_enter_start}, can_enter_end: {can_enter_end}")
+#         print(f"  - Condition: can_enter_start <= now_ms <= can_enter_end? {can_enter_start <= now_ms <= can_enter_end}")
+        
+#         # Chỉ trả về ca thi đang trong thời gian có thể vào thi
+#         if now_ms >= can_enter_start and now_ms <= can_enter_end:
+#             # Lấy thông tin exam
+#             exam_id = session.get("exam_id")
+#             exam = None
+#             if exam_id:
+#                 exam = await exams_collection.find_one({"_id": ObjectId(exam_id)})
+            
+#             # Lấy thông tin class
+#             class_id = None
+#             class_info = None
+#             if exam:
+#                 class_id = exam.get("class_id")
+#                 if class_id:
+#                     class_info = await classes_collection.find_one({"_id": ObjectId(class_id)})
+            
+#             # Vì chỉ trả về ca thi đang trong thời gian có thể vào thi,
+#             # nên status luôn là "Vào phòng thi"
+#             status = "Vào phòng thi"
+            
+#             current_sessions.append({
+#                 "_id": str(session["_id"]),
+#                 "name": session.get("name"),
+#                 "start_time": start_time.isoformat() if isinstance(start_time, datetime) else str(start_time),
+#                 "duration": duration,
+#                 "exam_id": str(exam_id) if exam_id else None,
+#                 "exam_name": exam.get("name") if exam else None,
+#                 "exam_code": exam.get("code") if exam else None,
+#                 "class_id": str(class_id) if class_id else None,
+#                 "class_name": class_info.get("name") if class_info else None,
+#                 "status": status
+#             })
+    
+#     # Sắp xếp theo start_time (sớm nhất trước)
+#     current_sessions.sort(key=lambda x: x.get("start_time", ""))
+    
+#     print(f"[DEBUG] Tổng số sessions tìm thấy: {session_count}, số sessions hiển thị: {len(current_sessions)}")
+    
+#     return {"success": True, "sessions": current_sessions}
+
+@app.post("/api/student/current-sessions")
+async def get_student_current_sessions(data: dict):
+    student_id = data.get("student_id")
+
+    if not student_id or not ObjectId.is_valid(student_id):
+        raise HTTPException(status_code=400, detail="Student ID không hợp lệ")
+
+    student_obj_id = ObjectId(student_id)
+
+    # Thời gian hiện tại (UTC + 7)
+    now = datetime.utcnow() + timedelta(hours=7)
+
+    print("\n================ TIME DEBUG =================")
+    print(f"[NOW] utc+7 now = {now}")
+
+    sessions_cursor = exam_sessions_collection.find({
+        "students": student_obj_id
+    })
+
+    current_sessions = []
+
+    async for session in sessions_cursor:
+        raw_start_time = session.get("start_time")
+        if not raw_start_time:
+            continue
+
+        start_time = None
+
+        # ---- Parse start_time ----
+        if isinstance(raw_start_time, str):
+            try:
+                if raw_start_time.endswith("Z"):
+                    parsed = datetime.fromisoformat(raw_start_time.replace("Z", "+00:00"))
+                    start_time = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                elif "+" in raw_start_time:
+                    parsed = datetime.fromisoformat(raw_start_time)
+                    start_time = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    parsed = datetime.fromisoformat(raw_start_time)
+                    start_time = parsed + timedelta(hours=7)
+            except Exception:
+                continue
+
+        elif isinstance(raw_start_time, datetime):
+            if raw_start_time.tzinfo:
+                start_time = raw_start_time.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                start_time = raw_start_time + timedelta(hours=7)
+
+        if not start_time:
+            continue
+
+        duration = session.get("duration", 0)
+
+        # ---- Tính mốc thời gian ----
+        start_ms = start_time.timestamp() * 1000
+        enter_end_ms = start_ms + 15 * 60 * 1000
+        end_ms = start_ms + duration * 60 * 1000
+        now_ms = now.timestamp() * 1000
+
+        # ---- DEBUG TIME ONLY ----
+        print("\n--------------------------------------------")
+        print(f"Session: {session.get('name')}")
+        print(f"start_time (raw)      = {raw_start_time}")
+        print(f"start_time (parsed)   = {start_time}")
+        print(f"enter_end (+15m)      = {datetime.fromtimestamp(enter_end_ms/1000)}")
+        print(f"end_time              = {datetime.fromtimestamp(end_ms/1000)}")
+        print(f"now                   = {now}")
+
+        print("COMPARE:")
+        print(f"now < start_time      = {now_ms < start_ms}")
+        print(f"start <= now <= +15m  = {start_ms <= now_ms <= enter_end_ms}")
+        print(f"now <= end_time       = {now_ms <= end_ms}")
+
+        # ---- Chỉ cho vào phòng thi trong 15 phút đầu ----
+        if start_ms <= now_ms <= enter_end_ms:
+            exam = None
+            class_info = None
+
+            exam_id = session.get("exam_id")
+            if exam_id:
+                exam = await exams_collection.find_one({"_id": ObjectId(exam_id)})
+
+            if exam and exam.get("class_id"):
+                class_info = await classes_collection.find_one(
+                    {"_id": ObjectId(exam["class_id"])}
+                )
+
+            current_sessions.append({
+                "_id": str(session["_id"]),
+                "name": session.get("name"),
+                "start_time": start_time.isoformat(),
+                "duration": duration,
+                "exam_id": str(exam_id) if exam_id else None,
+                "exam_name": exam.get("name") if exam else None,
+                "class_name": class_info.get("name") if class_info else None,
+                "class_id": str(class_info["_id"]) if class_info else None,
+                "status": "Vào phòng thi"
+            })
+
+    current_sessions.sort(key=lambda x: x["start_time"])
+
+    print("\n================ END DEBUG ==================\n")
+
+    return {
+        "success": True,
+        "sessions": current_sessions
+    }
+
+# ================================
+# 📊 ADMIN: Tạo báo cáo
+# ================================
+
+@app.post("/api/admin/generate-report")
+async def generate_report(data: dict):
+    """
+    Tạo báo cáo tổng hợp cho admin
+    data: {
+        start_date: "YYYY-MM-DD",
+        end_date: "YYYY-MM-DD",
+        class_id: "" (optional, nếu rỗng thì lấy tất cả)
+    }
+    """
+    start_date = data.get("start_date", "").strip()
+    end_date = data.get("end_date", "").strip()
+    class_id = data.get("class_id", "").strip()
+    
+    # Xây dựng query filter
+    query = {}
+    if start_date or end_date:
+        query["timestamp"] = {}
+        if start_date:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            query["timestamp"]["$gte"] = start_dt
+        if end_date:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            # Thêm 1 ngày để bao gồm cả ngày cuối
+            end_dt = end_dt + timedelta(days=1)
+            query["timestamp"]["$lt"] = end_dt
+    
+    if class_id and ObjectId.is_valid(class_id):
+        query["class_id"] = class_id
+    
+    # Lấy violations
+    violations_cursor = violates_collection.find(query).sort("timestamp", -1)
+    violations = await violations_cursor.to_list(length=None)
+    
+    # Lấy thông tin chi tiết cho violations
+    detailed_violations = []
+    for v in violations:
+        student_id = v.get("student")
+        exam_id = v.get("exam_id")
+        cls_id = v.get("class_id")
+        
+        # Lấy thông tin sinh viên
+        student_info = None
+        if student_id and ObjectId.is_valid(student_id):
+            student_info = await users_collection.find_one({"student_id": student_id})
+        
+        # Lấy thông tin lớp
+        class_info = None
+        if cls_id and ObjectId.is_valid(cls_id):
+            class_info = await classes_collection.find_one({"_id": ObjectId(cls_id)})
+        
+        # Lấy thông tin kỳ thi
+        exam_info = None
+        if exam_id and ObjectId.is_valid(exam_id):
+            exam_info = await exams_collection.find_one({"_id": ObjectId(exam_id)})
+        
+        # Mapping tên hành vi vi phạm
+        behavior_name = v.get("behavior", "")
+        violation_type = v.get("type", "")
+        behavior_display = behavior_name
+        
+        if behavior_name:
+            behavior_lower = behavior_name.lower()
+            if violation_type == "face":
+                if behavior_lower == "multi_face":
+                    behavior_display = "Phát hiện nhiều người trong khung hình"
+                elif behavior_lower in ["mismatch_face", "unknown_face"]:
+                    behavior_display = "Khuôn mặt không khớp/nghi vấn thi hộ"
+                elif behavior_lower == "no_face":
+                    behavior_display = "Không phát hiện khuôn mặt"
+                elif behavior_lower == "look_away":
+                    behavior_display = "Đảo mắt bất thường/nhìn ra ngoài màn hình"
+            elif violation_type == "behavior":
+                if behavior_lower == "mobile_use":
+                    behavior_display = "Sử dụng điện thoại trong khi thi"
+                elif behavior_lower in ["eye_movement", "look_away"]:
+                    behavior_display = "Đảo mắt bất thường/nhìn ra ngoài màn hình"
+                elif behavior_lower == "side_watching":
+                    behavior_display = "Nghiêng mặt / xoay mặt sang hướng khác"
+                elif behavior_lower == "hand_move":
+                    behavior_display = "Cử động tay bất thường"
+                elif behavior_lower == "mouth_open":
+                    behavior_display = "Mở miệng bất thường/ Có dấu hiệu trao đổi"
+        
+        detailed_violations.append({
+            **serialize_doc2(v),
+            "student_name": student_info.get("name") if student_info else "N/A",
+            "student_id": student_info.get("student_id") if student_info else "N/A",
+            "class_name": class_info.get("name") if class_info else "N/A",
+            "class_code": class_info.get("code") if class_info else "N/A",
+            "exam_name": exam_info.get("name") if exam_info else "N/A",
+            "exam_code": exam_info.get("code") if exam_info else "N/A",
+            "behavior_display": behavior_display,  # Tên hành vi đã được dịch
+        })
+    
+    # Thống kê
+    total_violations = len(detailed_violations)
+    behavior_violations = len([v for v in detailed_violations if v.get("type") == "behavior"])
+    face_violations = len([v for v in detailed_violations if v.get("type") == "face"])
+    
+    # Thống kê theo môn học
+    class_stats = {}
+    for v in detailed_violations:
+        cls_name = v.get("class_name", "N/A")
+        if cls_name not in class_stats:
+            class_stats[cls_name] = {"total": 0, "behavior": 0, "face": 0}
+        class_stats[cls_name]["total"] += 1
+        if v.get("type") == "behavior":
+            class_stats[cls_name]["behavior"] += 1
+        elif v.get("type") == "face":
+            class_stats[cls_name]["face"] += 1
+    
+    # Thống kê theo sinh viên
+    student_stats = {}
+    for v in detailed_violations:
+        student_name = v.get("student_name", "N/A")
+        student_id_code = v.get("student_id", "N/A")
+        key = f"{student_name} ({student_id_code})"
+        if key not in student_stats:
+            student_stats[key] = {"total": 0, "behavior": 0, "face": 0}
+        student_stats[key]["total"] += 1
+        if v.get("type") == "behavior":
+            student_stats[key]["behavior"] += 1
+        elif v.get("type") == "face":
+            student_stats[key]["face"] += 1
+    
+    # Lấy danh sách exams trong khoảng thời gian
+    exam_query = {}
+    if start_date or end_date:
+        exam_query["created_at"] = {}
+        if start_date:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            exam_query["created_at"]["$gte"] = start_dt
+        if end_date:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            end_dt = end_dt + timedelta(days=1)
+            exam_query["created_at"]["$lt"] = end_dt
+    
+    if class_id and ObjectId.is_valid(class_id):
+        exam_query["class_id"] = class_id
+    
+    exams_cursor = exams_collection.find(exam_query)
+    exams_list = await exams_cursor.to_list(length=None)
+    exams_serialized = [serialize_doc(exam) for exam in exams_list]
+    
+    return {
+        "success": True,
+        "report": {
+            "violations": detailed_violations,
+            "statistics": {
+                "total_violations": total_violations,
+                "behavior_violations": behavior_violations,
+                "face_violations": face_violations,
+            },
+            "class_statistics": class_stats,
+            "student_statistics": student_stats,
+            "exams": exams_serialized,
+            "filter": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "class_id": class_id,
+            }
+        }
+    }
 

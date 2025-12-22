@@ -7,21 +7,24 @@ import {
 } from "react-router-dom";
 import { useSelector } from "react-redux";
 
-import FaceRegister from "./pages/FaceRegister";
-import FaceVerify from "./pages/FaceVerify";
-import StudentLive from "./pages/StudentLive";
-import TeacherLive from "./pages/TeacherLive";
-import Home from "./pages/Home";
-import Dashboard from "./pages/Dashboard";
-import Login from "./pages/Login";
-import ClassDashboard from "./pages/ClassDashboard";
-import StudentDashboard from "./pages/StudentDashboard";
-import StudentClassDetail from "./pages/StudentClassDetail";
-import TeacherViolationHistory from "./pages/TeacherViolationHistory";
-import StudentViolationHistory from "./pages/StudentViolationHistory";
+import Home from "./pages/auth/Home";
+import Login from "./pages/auth/Login";
+
+import FaceRegister from "./pages/student/FaceRegister";
+import FaceVerify from "./pages/student/FaceVerify";
+import StudentLive from "./pages/student/StudentLive";
+import StudentDashboard from "./pages/student/StudentDashboard";
+import StudentClassDetail from "./pages/student/StudentClassDetail";
+import StudentViolationHistory from "./pages/student/StudentViolationHistory";
+
+import TeacherLive from "./pages/teacher/TeacherLive";
+import ClassDashboard from "./pages/teacher/ClassDashboard";
+import TeacherViolationHistory from "./pages/teacher/TeacherViolationHistory";
+
+import AdminDashboard from "./pages/admin/AdminDashboard";
 
 // ✅ Component bảo vệ route theo role
-function ProtectedRoute({ element, allowedRole }) {
+function ProtectedRoute({ element, allowedRole, requireFaceRegister = false }) {
   const userInfo = useSelector((state) => state.user.userInfo);
 
   if (!userInfo) {
@@ -36,6 +39,14 @@ function ProtectedRoute({ element, allowedRole }) {
     return <Navigate to={redirectPath} replace />;
   }
 
+  // Kiểm tra đăng ký danh tính cho sinh viên (nếu route yêu cầu)
+  if (requireFaceRegister && userInfo.role === "student") {
+    if (!userInfo.face_registered && !userInfo.face_image) {
+      // Chưa đăng ký danh tính → redirect đến trang đăng ký
+      return <Navigate to="/student_register" replace />;
+    }
+  }
+
   // Nếu hợp lệ → cho vào route
   return element;
 }
@@ -46,14 +57,18 @@ function App() {
       <div className="App">
         <Routes>
           {/* Trang chung */}
-          <Route path="/" element={<Home />} />
+          {/* <Route path="/" element={<Home />} /> */}
           <Route path="/login" element={<Login />} />
 
           {/* ✅ Routes cho student */}
           <Route
             path="/student_live"
             element={
-              <ProtectedRoute element={<StudentLive />} allowedRole="student" />
+              <ProtectedRoute 
+                element={<StudentLive />} 
+                allowedRole="student"
+                requireFaceRegister={true}
+              />
             }
           />
           <Route
@@ -62,6 +77,7 @@ function App() {
               <ProtectedRoute
                 element={<StudentDashboard />}
                 allowedRole="student"
+                requireFaceRegister={false}
               />
             }
           />
@@ -71,6 +87,7 @@ function App() {
               <ProtectedRoute
                 element={<StudentViolationHistory />}
                 allowedRole="student"
+                requireFaceRegister={true}
               />
             }
           />
@@ -110,12 +127,6 @@ function App() {
             }
           />
           <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute element={<Dashboard />} allowedRole="teacher" />
-            }
-          />
-          <Route
             path="/class_dashboard"
             element={
               <ProtectedRoute
@@ -134,8 +145,19 @@ function App() {
             }
           />
 
+          {/* ✅ Route cho admin (có thể chỉnh lại allowedRole khi backend hỗ trợ role admin) */}
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute
+                element={<AdminDashboard />}
+                allowedRole="admin"
+              />
+            }
+          />
+
           {/* Nếu không khớp route nào → quay về trang chủ */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </div>
     </Router>
