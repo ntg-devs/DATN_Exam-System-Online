@@ -5,6 +5,9 @@ import { FiSearch } from "react-icons/fi";
 import { FaBook, FaExclamationTriangle, FaClock } from "react-icons/fa";
 import { LogOut, GraduationCap } from "lucide-react";
 import { Link } from "react-router-dom";
+import NotificationBell from "../../components/NotificationBell";
+import toast, { Toaster } from "react-hot-toast";
+
 
 // ====== Map / helper dùng chung ======
 const getReasonText = (reason) => {
@@ -164,6 +167,7 @@ export default function TeacherViolationHistory() {
             >
               Lịch sử vi phạm
             </Link>
+            <NotificationBell teacherId={userInfo._id} toast={toast} />
             <div className="relative">
               <div
                 className="flex items-center gap-3 px-4 py-2 bg-gray-100/80 rounded-full cursor-pointer hover:bg-gray-200 transition"

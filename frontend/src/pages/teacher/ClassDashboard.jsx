@@ -1,5 +1,4 @@
-
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSelector } from "react-redux";
 import { useNavigate, Link } from "react-router-dom";
 import toast, { Toaster } from "react-hot-toast";
@@ -12,9 +11,7 @@ import {
   FaRegCalendarAlt,
   FaBook,
 } from "react-icons/fa";
-import {
-  MdClose,
-} from "react-icons/md";
+import { MdClose } from "react-icons/md";
 import {
   getClasses,
   getExamsByClass,
@@ -27,6 +24,7 @@ import {
 import { useDispatch } from "react-redux";
 import { setVerifyInfo } from "../../redux/slices/verifySlice.js";
 import NotificationBell from "../../components/NotificationBell";
+import { SOCKET_URL } from "../../utils/path";
 
 export default function ClassDashboard() {
   const { userInfo } = useSelector((state) => state.user);
@@ -44,20 +42,21 @@ export default function ClassDashboard() {
     confirm_password: "",
   });
   const [changingPassword, setChangingPassword] = useState(false);
-  const [showStudentsInSessionModal, setShowStudentsInSessionModal] = useState(false);
+  const [showStudentsInSessionModal, setShowStudentsInSessionModal] =
+    useState(false);
   const [studentsInSession, setStudentsInSession] = useState([]);
   const [exams, setExams] = useState([]);
   const [panelMode, setPanelMode] = useState("exam");
   const [listStudentsInClass, setListStudentsInClass] = useState([]);
-  
+
   // Exam detail + sessions (chỉ xem)
   const [showExamDetailModal, setShowExamDetailModal] = useState(false);
   const [examDetail, setExamDetail] = useState(null);
   const [examSessions, setExamSessions] = useState([]);
-  
+
   // Thống kê ca thi
   const [allSessions, setAllSessions] = useState([]);
-  
+
   // Popup ca thi đang diễn ra
   const [showActiveSessionsModal, setShowActiveSessionsModal] = useState(false);
 
@@ -65,7 +64,11 @@ export default function ClassDashboard() {
   const notifyError = (msg) => toast.error(msg);
 
   const handleChangePassword = async () => {
-    if (!passwordForm.current_password || !passwordForm.new_password || !passwordForm.confirm_password) {
+    if (
+      !passwordForm.current_password ||
+      !passwordForm.new_password ||
+      !passwordForm.confirm_password
+    ) {
       notifyError("Vui lòng nhập đầy đủ thông tin!");
       return;
     }
@@ -83,9 +86,9 @@ export default function ClassDashboard() {
     setChangingPassword(true);
     try {
       const res = await changePassword({
-        user_id: userInfo._id,
         current_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
+        // Không cần user_id nữa, backend lấy từ JWT token
       });
 
       if (res.success) {
@@ -137,41 +140,113 @@ export default function ClassDashboard() {
     }
   };
 
+  // WebSocket connection cho realtime updates
+  const wsRef = useRef(null);
+
   // Load tất cả ca thi để thống kê
-  useEffect(() => {
-    const loadAllSessions = async () => {
-      if (classes.length === 0) {
-        setAllSessions([]);
-        return;
-      }
-      const allSessionsData = [];
-      for (const cls of classes) {
-        try {
-          const examsData = await getExamsByClass({ class_id: cls._id });
-          for (const exam of examsData?.exams || []) {
-            try {
-              const sessionsData = await getExamSessions({ exam_id: exam._id });
-              for (const session of sessionsData?.sessions || []) {
-                allSessionsData.push({
-                  ...session,
-                  exam: exam,
-                  class: cls,
-                });
-              }
-            } catch (err) {
-              console.error("Lỗi load sessions cho exam:", err);
+  const loadAllSessions = async () => {
+    if (classes.length === 0) {
+      setAllSessions([]);
+      return;
+    }
+    const allSessionsData = [];
+    for (const cls of classes) {
+      try {
+        const examsData = await getExamsByClass({ class_id: cls._id });
+        for (const exam of examsData?.exams || []) {
+          try {
+            const sessionsData = await getExamSessions({ exam_id: exam._id });
+            for (const session of sessionsData?.sessions || []) {
+              allSessionsData.push({
+                ...session,
+                exam: exam,
+                class: cls,
+              });
             }
+          } catch (err) {
+            console.error("Lỗi load sessions cho exam:", err);
           }
-        } catch (err) {
-          console.error("Lỗi load exams cho class:", err);
         }
+      } catch (err) {
+        console.error("Lỗi load exams cho class:", err);
       }
-      setAllSessions(allSessionsData);
-    };
+    }
+    setAllSessions(allSessionsData);
+  };
+
+  useEffect(() => {
     if (userInfo?._id) {
       loadAllSessions();
     }
   }, [classes, userInfo]);
+
+  // Kết nối WebSocket cho realtime session updates
+  useEffect(() => {
+    if (userInfo?._id && userInfo?.role === "teacher") {
+      const ws = new WebSocket(
+        `${SOCKET_URL}/ws/sessions?type=teacher&user_id=${userInfo._id}`
+      );
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("✅ Teacher connected to session realtime");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("[Realtime] Session update:", data);
+
+          if (
+            data.type === "session_created" ||
+            data.type === "session_updated"
+          ) {
+            // Refresh danh sách ca thi khi có thay đổi
+            loadAllSessions();
+
+            // Hiển thị thông báo
+            if (data.type === "session_created") {
+              toast.success(`Ca thi mới: ${data.session?.name || "Ca thi"}`, {
+                duration: 3000,
+              });
+            } else if (data.type === "session_updated") {
+              toast.info(
+                `Ca thi đã được cập nhật: ${data.session_name || "Ca thi"}`,
+                {
+                  duration: 3000,
+                }
+              );
+            }
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message:", err);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+
+      ws.onclose = () => {
+        console.log("❌ Teacher disconnected from session realtime");
+        // Tự động reconnect sau 3 giây
+        setTimeout(() => {
+          if (userInfo?._id) {
+            const newWs = new WebSocket(
+              `${SOCKET_URL}/ws/sessions?type=teacher&user_id=${userInfo._id}`
+            );
+            wsRef.current = newWs;
+          }
+        }, 3000);
+      };
+
+      return () => {
+        if (wsRef.current) {
+          wsRef.current.close();
+        }
+      };
+    }
+  }, [userInfo?._id]);
 
   const handleOpenClassDetail = async (cls) => {
     setCurrentClass(cls);
@@ -251,27 +326,29 @@ export default function ClassDashboard() {
 
   const getSessionStatus = (session) => {
     const OFFSET = 7 * 60 * 60 * 1000;
-  
-    const now = Date.now() 
+
+    const now = Date.now();
     console.log("now:", new Date(now).toLocaleString());
-  
+
     const start = new Date(session.start_time).getTime() + OFFSET;
     console.log("start:", new Date(start).toLocaleString());
-  
+
     const end = start + session.duration * 60 * 1000;
-  
+
     if (now >= start && now <= end) return "active"; // đang diễn ra
-    if (now < start) return "soon";   // chưa đến giờ
-    if (now > end) return "done";     // đã kết thúc
+    if (now < start) return "soon"; // chưa đến giờ
+    if (now > end) return "done"; // đã kết thúc
     return "";
   };
-  
 
   // Lấy danh sách ca thi đang diễn ra
   const getActiveSessions = () => {
-    return allSessions.filter((session) => getSessionStatus(session) === "active");
+    return allSessions.filter(
+      (session) => getSessionStatus(session) === "active"
+    );
   };
 
+  console.log(exams);
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -299,122 +376,135 @@ export default function ClassDashboard() {
             </Link>
             <NotificationBell teacherId={userInfo._id} toast={toast} />
             <div className="relative">
-                  <div
-                    className="flex items-center gap-3 px-4 py-2 bg-gray-100/80 rounded-full cursor-pointer hover:bg-gray-200 transition"
-                    onClick={() => setShowTeacherInfo(!showTeacherInfo)}
-                  >
-                    <div className="w-6 h-6 rounded-full bg-linear-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
-                      G
+              <div
+                className="flex items-center gap-3 px-4 py-2 bg-gray-100/80 rounded-full cursor-pointer hover:bg-gray-200 transition"
+                onClick={() => setShowTeacherInfo(!showTeacherInfo)}
+              >
+                <div className="w-6 h-6 rounded-full bg-linear-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
+                  G
+                </div>
+              </div>
+
+              {/* Overlay để click ra ngoài đóng popup */}
+              {showTeacherInfo && (
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setShowTeacherInfo(false)}
+                />
+              )}
+
+              {/* 3. POP-UP HIỂN THỊ THÔNG TIN TÀI KHOẢN */}
+              {showTeacherInfo && (
+                <div className="absolute right-0 mt-2 p-4 w-80 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 animate-fade-in">
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-lg font-bold text-gray-800">
+                        Thông tin tài khoản
+                      </h3>
+                      <button
+                        onClick={() => setShowTeacherInfo(false)}
+                        className="text-gray-400 hover:text-gray-600 transition text-xl leading-none"
+                        title="Đóng"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="space-y-2 mb-4">
+                      <div className="flex gap-2 items-center">
+                        <div className="text-sm font-semibold text-gray-700 w-24">
+                          Tên:
+                        </div>
+                        <div className="text-sm text-indigo-600 font-medium">
+                          {userInfo.name}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <div className="text-sm font-semibold text-gray-700 w-24">
+                          Email:
+                        </div>
+                        <div className="text-sm text-indigo-600 font-medium">
+                          {userInfo.email}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Overlay để click ra ngoài đóng popup */}
-                  {showTeacherInfo && (
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setShowTeacherInfo(false)}
-                    />
-                  )}
-
-                  {/* 3. POP-UP HIỂN THỊ THÔNG TIN TÀI KHOẢN */}
-                  {showTeacherInfo && (
-                    <div className="absolute right-0 mt-2 p-4 w-80 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 animate-fade-in">
-                      <div className="mb-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-lg font-bold text-gray-800">Thông tin tài khoản</h3>
-                          <button
-                            onClick={() => setShowTeacherInfo(false)}
-                            className="text-gray-400 hover:text-gray-600 transition text-xl leading-none"
-                            title="Đóng"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <div className="space-y-2 mb-4">
-                          <div className="flex gap-2 items-center">
-                            <div className="text-sm font-semibold text-gray-700 w-24">
-                              Tên:
-                            </div>
-                            <div className="text-sm text-indigo-600 font-medium">
-                              {userInfo.name}
-                            </div>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <div className="text-sm font-semibold text-gray-700 w-24">
-                              Email:
-                            </div>
-                            <div className="text-sm text-indigo-600 font-medium">
-                              {userInfo.email}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Form đổi mật khẩu */}
-                      {!showChangePassword ? (
+                  {/* Form đổi mật khẩu */}
+                  {!showChangePassword ? (
+                    <button
+                      onClick={() => setShowChangePassword(true)}
+                      className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium text-sm"
+                    >
+                      Đổi mật khẩu
+                    </button>
+                  ) : (
+                    <div className="space-y-3 border-t pt-3">
+                      <h4 className="text-sm font-semibold text-gray-700">
+                        Đổi mật khẩu
+                      </h4>
+                      <input
+                        type="password"
+                        placeholder="Mật khẩu hiện tại"
+                        value={passwordForm.current_password}
+                        onChange={(e) =>
+                          setPasswordForm({
+                            ...passwordForm,
+                            current_password: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <input
+                        type="password"
+                        placeholder="Mật khẩu mới"
+                        value={passwordForm.new_password}
+                        onChange={(e) =>
+                          setPasswordForm({
+                            ...passwordForm,
+                            new_password: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <input
+                        type="password"
+                        placeholder="Xác nhận mật khẩu mới"
+                        value={passwordForm.confirm_password}
+                        onChange={(e) =>
+                          setPasswordForm({
+                            ...passwordForm,
+                            confirm_password: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <div className="flex gap-2">
                         <button
-                          onClick={() => setShowChangePassword(true)}
-                          className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium text-sm"
+                          onClick={handleChangePassword}
+                          disabled={changingPassword}
+                          className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium text-sm disabled:opacity-50"
                         >
-                          Đổi mật khẩu
+                          {changingPassword ? "Đang xử lý..." : "Xác nhận"}
                         </button>
-                      ) : (
-                        <div className="space-y-3 border-t pt-3">
-                          <h4 className="text-sm font-semibold text-gray-700">Đổi mật khẩu</h4>
-                          <input
-                            type="password"
-                            placeholder="Mật khẩu hiện tại"
-                            value={passwordForm.current_password}
-                            onChange={(e) =>
-                              setPasswordForm({ ...passwordForm, current_password: e.target.value })
-                            }
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                          <input
-                            type="password"
-                            placeholder="Mật khẩu mới"
-                            value={passwordForm.new_password}
-                            onChange={(e) =>
-                              setPasswordForm({ ...passwordForm, new_password: e.target.value })
-                            }
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                          <input
-                            type="password"
-                            placeholder="Xác nhận mật khẩu mới"
-                            value={passwordForm.confirm_password}
-                            onChange={(e) =>
-                              setPasswordForm({ ...passwordForm, confirm_password: e.target.value })
-                            }
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={handleChangePassword}
-                              disabled={changingPassword}
-                              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium text-sm disabled:opacity-50"
-                            >
-                              {changingPassword ? "Đang xử lý..." : "Xác nhận"}
-                            </button>
-                            <button
-                              onClick={() => {
-                                setShowChangePassword(false);
-                                setPasswordForm({
-                                  current_password: "",
-                                  new_password: "",
-                                  confirm_password: "",
-                                });
-                              }}
-                              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-medium text-sm"
-                            >
-                              Hủy
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                        <button
+                          onClick={() => {
+                            setShowChangePassword(false);
+                            setPasswordForm({
+                              current_password: "",
+                              new_password: "",
+                              confirm_password: "",
+                            });
+                          }}
+                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-medium text-sm"
+                        >
+                          Hủy
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
+              )}
+            </div>
             <button
               onClick={() => {
                 navigate("/");
@@ -431,11 +521,11 @@ export default function ClassDashboard() {
         {/* Thống kê ca thi */}
         {(() => {
           const stats = getSessionsStats();
-          console.log(stats)
+          console.log(stats);
           const activeSessions = getActiveSessions();
           return (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <div 
+              <div
                 className="bg-linear-to-br from-green-50 to-green-100 border border-green-200 rounded-xl p-5 shadow-sm cursor-pointer hover:shadow-md hover:border-green-300 transition-all"
                 onClick={() => {
                   if (activeSessions.length > 0) {
@@ -450,7 +540,9 @@ export default function ClassDashboard() {
                     <p className="text-xs font-medium uppercase tracking-wide text-green-700 mb-1">
                       Ca thi đang diễn ra
                     </p>
-                    <p className="text-3xl font-bold text-green-900">{stats.activeCount}</p>
+                    <p className="text-3xl font-bold text-green-900">
+                      {stats.activeCount}
+                    </p>
                     {activeSessions.length > 0 && (
                       <p className="text-xs text-green-600 mt-1 cursor-pointer hover:underline">
                         Bấm để xem chi tiết →
@@ -468,7 +560,9 @@ export default function ClassDashboard() {
                     <p className="text-xs font-medium uppercase tracking-wide text-blue-700 mb-1">
                       Ca thi sắp tới
                     </p>
-                    <p className="text-3xl font-bold text-blue-900">{stats.upcomingCount}</p>
+                    <p className="text-3xl font-bold text-blue-900">
+                      {stats.upcomingCount}
+                    </p>
                   </div>
                   <div className="p-3 bg-blue-200 rounded-lg">
                     <FaClock className="text-blue-700" size={24} />
@@ -481,7 +575,9 @@ export default function ClassDashboard() {
                     <p className="text-xs font-medium uppercase tracking-wide text-slate-700 mb-1">
                       Ca thi đã hoàn thành
                     </p>
-                    <p className="text-3xl font-bold text-slate-900">{stats.completedCount}</p>
+                    <p className="text-3xl font-bold text-slate-900">
+                      {stats.completedCount}
+                    </p>
                   </div>
                   <div className="p-3 bg-slate-200 rounded-lg">
                     <FaCheckCircle className="text-slate-700" size={24} />
@@ -512,7 +608,7 @@ export default function ClassDashboard() {
                   >
                     {/* Decorative element */}
                     <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-100 rounded-full -mr-12 -mt-12 opacity-50 group-hover:opacity-70 transition-opacity"></div>
-                    
+
                     <div className="relative flex justify-between items-start">
                       <div className="flex-1">
                         <div className="flex items-center gap-3 mb-2">
@@ -525,16 +621,20 @@ export default function ClassDashboard() {
                         </div>
                         <p className="text-sm text-gray-600 ml-11 mb-3">
                           Mã lớp học:{" "}
-                          <span className="font-semibold text-indigo-600">{cls.code}</span>
+                          <span className="font-semibold text-indigo-600">
+                            {cls.code}
+                          </span>
                         </p>
                         <div className="flex items-center gap-4 ml-11">
                           <div className="flex items-center gap-2 text-sm text-gray-600">
                             <FaUser className="text-gray-400" size={14} />
-                            <span className="font-medium">{cls.students?.length || 0} sinh viên</span>
+                            <span className="font-medium">
+                              {cls.students?.length || 0} sinh viên
+                            </span>
                           </div>
                         </div>
                       </div>
-                      
+
                       <div className="flex flex-col gap-2 ml-4">
                         <button
                           onClick={(e) => {
@@ -581,7 +681,6 @@ export default function ClassDashboard() {
                     <h3 className="font-medium text-lg flex items-center gap-2">
                       <FaRegCalendarAlt /> Lịch thi
                     </h3>
-
                   </div>
                 ) : (
                   <div>
@@ -607,7 +706,9 @@ export default function ClassDashboard() {
                           >
                             <div className="flex-1">
                               <div className="flex items-center gap-2 mb-1">
-                                <p className="font-semibold text-gray-800">{ex.name}</p>
+                                <p className="font-semibold text-gray-800">
+                                  {ex.name}
+                                </p>
                                 {status === "active" && (
                                   <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
                                     Đang diễn ra
@@ -629,7 +730,10 @@ export default function ClassDashboard() {
                               </p>
                               {ex.start_time && (
                                 <p className="text-sm text-gray-500">
-                                  {new Date(ex.start_time).toLocaleString("vi-VN")} — {ex.duration} phút
+                                  {new Date(
+                                    new Date(ex.start_time).getTime()
+                                  ).toLocaleString()}{" "}
+                                  {/* — {ex.duration} phút */}
                                 </p>
                               )}
                             </div>
@@ -686,7 +790,6 @@ export default function ClassDashboard() {
         </div>
       </div>
 
-
       {/* Modal chi tiết bài thi (liệt kê ca thi) */}
       {showExamDetailModal && examDetail && (
         <div className="fixed inset-0 bg-black/40 flex justify-center items-center z-50 overflow-auto">
@@ -719,7 +822,10 @@ export default function ClassDashboard() {
                           <p className="font-semibold">
                             Bắt đầu:{" "}
                             {s.start_time
-                              ? new Date(s.start_time).toLocaleString("vi-VN")
+                              ? new Date(
+                                  new Date(s.start_time).getTime() +
+                                    7 * 60 * 60 * 1000
+                                ).toLocaleString()
                               : "-"}
                           </p>
                           <p className="text-sm text-gray-500">
@@ -853,7 +959,9 @@ export default function ClassDashboard() {
             {getActiveSessions().length === 0 ? (
               <div className="text-center py-12">
                 <FaClock className="text-gray-400 mx-auto mb-3" size={48} />
-                <p className="text-gray-500 text-lg">Hiện tại không có ca thi nào đang diễn ra</p>
+                <p className="text-gray-500 text-lg">
+                  Hiện tại không có ca thi nào đang diễn ra
+                </p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -873,26 +981,34 @@ export default function ClassDashboard() {
                           </span>
                         </div>
                         <p className="text-sm text-gray-600 mb-1">
-                          <span className="font-semibold">Ca thi:</span> {session.name}
+                          <span className="font-semibold">Ca thi:</span>{" "}
+                          {session.name}
                         </p>
                         <p className="text-sm text-gray-600 mb-1">
-                          <span className="font-semibold">Lớp:</span> {session.class?.name || "N/A"}
+                          <span className="font-semibold">Lớp:</span>{" "}
+                          {session.class?.name || "N/A"}
                         </p>
                         <p className="text-sm text-gray-600 mb-1">
-                          <span className="font-semibold">Mã lớp:</span> {session.class?.code || "N/A"}
+                          <span className="font-semibold">Mã lớp:</span>{" "}
+                          {session.class?.code || "N/A"}
                         </p>
                         {session.start_time && (
                           <p className="text-sm text-gray-600 mb-1">
                             <span className="font-semibold">Bắt đầu:</span>{" "}
-                            {new Date(session.start_time).toLocaleString("vi-VN")}
+                            {new Date(
+                              new Date(session.start_time).getTime() +
+                                7 * 60 * 60 * 1000
+                            ).toLocaleString()}
                           </p>
                         )}
                         <p className="text-sm text-gray-600">
-                          <span className="font-semibold">Thời lượng:</span> {session.duration} phút
+                          <span className="font-semibold">Thời lượng:</span>{" "}
+                          {session.duration} phút
                         </p>
                         {session.students?.length !== undefined && (
                           <p className="text-sm text-gray-600 mt-1">
-                            <span className="font-semibold">Số sinh viên:</span> {session.students.length}
+                            <span className="font-semibold">Số sinh viên:</span>{" "}
+                            {session.students.length}
                           </p>
                         )}
                       </div>
@@ -907,7 +1023,9 @@ export default function ClassDashboard() {
                               })
                             );
                             navigate(
-                              `/teacher_live?exam=${session.exam?._id || session.exam_id}&session=${session._id}`
+                              `/teacher_live?exam=${
+                                session.exam?._id || session.exam_id
+                              }&session=${session._id}`
                             );
                             setShowActiveSessionsModal(false);
                           }}

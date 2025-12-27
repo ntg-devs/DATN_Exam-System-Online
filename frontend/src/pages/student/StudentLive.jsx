@@ -57,9 +57,9 @@ export default function StudentLive({ fps = 4 }) {
     setChangingPassword(true);
     try {
       const res = await changePassword({
-        user_id: userInfo._id,
         current_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
+        // Không cần user_id nữa, backend lấy từ JWT token
       });
 
       if (res.success) {

@@ -4,9 +4,9 @@ uvicorn[standard]
 python-multipart # Cần cho xử lý Form và UploadFile
 
 # --- Data Science & Computer Vision ---
-numpy
+numpy<2.0  # Fix compatibility with torch and other ML libraries (NumPy 2.x breaks torch)
 Pillow
-opencv-python
+opencv-python<4.11.0  # Compatible with numpy 1.x
 
 # --- Machine Learning / Deep Learning ---
 torch
@@ -24,5 +24,10 @@ scikit-learn # Được sử dụng cho normalize và cosine_similarity
 motor # AsyncIOMotorClient cho MongoDB
 passlib[bcrypt] # Hashing mật khẩu
 
+# --- Security ---
+python-jose[cryptography] # JWT token handling
+python-dotenv # Environment variables management
+
 # --- Other Utilities ---
-bson # Dùng cho ObjectId của MongoDB (thường là dependency của Motor nhưng nên liệt kê)
+# Note: Không cần bson riêng, pymongo (dependency của motor) đã có bson built-in
+# Nếu có lỗi import bson, uninstall bson package: pip uninstall bson

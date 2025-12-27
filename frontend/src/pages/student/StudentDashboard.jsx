@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { getClasses, joinClass, changePassword, getStudentCurrentSessions } from "../../services/services.js";
 import toast, { Toaster } from "react-hot-toast";
 import { useSelector } from "react-redux";
@@ -156,9 +156,9 @@ export default function StudentDashboard() {
     setChangingPassword(true);
     try {
       const res = await changePassword({
-        user_id: userInfo._id,
         current_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
+        // Không cần user_id nữa, backend lấy từ JWT token
       });
 
       if (res.success) {
@@ -227,16 +227,21 @@ export default function StudentDashboard() {
   // Bỏ logic kiểm tra face_registered khi vào trang chủ
   // Chỉ kiểm tra khi bấm vào thi
 
-  // ⭐ Real-time WebSocket
+  // ⭐ Real-time WebSocket cho classes và sessions
+  const wsClassesRef = useRef(null);
+  const wsSessionsRef = useRef(null);
+
   useEffect(() => {
+    if (!studentId) return;
+
     fetchClasses();
     fetchCurrentSessions();
 
-    const ws = new WebSocket(`${SOCKET_URL}/ws/classes`);
-    // const ws = new WebSocket("wss://https://unworkable-bernie-merely.ngrok-free.dev/ws/classes");
-    // const ws = new WebSocket("wss://103.142.24.110:8000/ws/classes");
+    // WebSocket cho classes
+    const wsClasses = new WebSocket(`${SOCKET_URL}/ws/classes`);
+    wsClassesRef.current = wsClasses;
 
-    ws.onmessage = (event) => {
+    wsClasses.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
       if (data.type === "class_updated") {
@@ -252,16 +257,64 @@ export default function StudentDashboard() {
       }
     };
 
-    ws.onerror = () => console.log("WS error classes");
-    ws.onclose = () => console.log("WS closed classes");
+    wsClasses.onerror = () => console.log("WS error classes");
+    wsClasses.onclose = () => console.log("WS closed classes");
 
-    // Refresh ca thi hiện tại mỗi 30 giây
+    // WebSocket cho sessions (realtime ca thi)
+    const wsSessions = new WebSocket(`${SOCKET_URL}/ws/sessions?type=student&user_id=${studentId}`);
+    wsSessionsRef.current = wsSessions;
+
+    wsSessions.onopen = () => {
+      console.log("✅ Connected to session realtime");
+    };
+
+    wsSessions.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log("[Realtime] Session update:", data);
+
+        if (data.type === "session_created" || data.type === "session_updated") {
+          // Refresh danh sách ca thi khi có thay đổi
+          fetchCurrentSessions();
+          
+          // Hiển thị thông báo
+          if (data.type === "session_updated" && data.action === "students_added") {
+            const studentIds = data.student_ids || [];
+            if (studentIds.includes(studentId)) {
+              toast.success(`Bạn đã được phân vào ca thi: ${data.session_name || "Ca thi mới"}`, {
+                duration: 5000,
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error parsing WebSocket message:", err);
+      }
+    };
+
+    wsSessions.onerror = (error) => {
+      console.error("WebSocket error:", error);
+    };
+
+    wsSessions.onclose = () => {
+      console.log("❌ Disconnected from session realtime");
+      // Tự động reconnect sau 3 giây
+      setTimeout(() => {
+        if (studentId) {
+          const newWs = new WebSocket(`${SOCKET_URL}/ws/sessions?type=student&user_id=${studentId}`);
+          wsSessionsRef.current = newWs;
+        }
+      }, 3000);
+    };
+
+    // Refresh ca thi hiện tại mỗi 60 giây (realtime đã xử lý phần lớn)
     const interval = setInterval(() => {
       fetchCurrentSessions();
-    }, 30000);
+    }, 60000);
 
     return () => {
-      ws.close();
+      if (wsClassesRef.current) wsClassesRef.current.close();
+      if (wsSessionsRef.current) wsSessionsRef.current.close();
       clearInterval(interval);
     };
   }, [studentId]);

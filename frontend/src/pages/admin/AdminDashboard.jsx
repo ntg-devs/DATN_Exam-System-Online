@@ -110,7 +110,7 @@ export default function AdminDashboard() {
   });
 
   // Mật khẩu mặc định
-  const DEFAULT_PASSWORD = "123456";
+  const DEFAULT_PASSWORD = "Abc123456!";
 
   // ================================
   // 🎓 QUẢN LÝ MÔN HỌC (SUBJECTS)
@@ -208,6 +208,13 @@ export default function AdminDashboard() {
     if (activeTab === "stats") {
       fetchSubjects();
       fetchAllExams();
+    }
+  }, [activeTab]);
+
+  // Fetch danh sách môn học khi vào tab reports
+  useEffect(() => {
+    if (activeTab === "reports") {
+      fetchSubjects();
     }
   }, [activeTab]);
 
@@ -1462,7 +1469,7 @@ export default function AdminDashboard() {
                       <p className="text-sm text-blue-800">
                         <strong>Mật khẩu mặc định:</strong>{" "}
                         <code className="bg-blue-100 px-2 py-1 rounded">
-                          123456
+                          Abc123456!
                         </code>
                       </p>
                       <p className="text-xs text-blue-600 mt-1">
@@ -3376,17 +3383,20 @@ export default function AdminDashboard() {
                     </h3>
                     <ResponsiveContainer width="100%" height={300}>
                       <BarChart
-                        data={Object.entries(reportData.class_statistics).map(
-                          ([name, stats]) => ({
-                            name:
-                              name.length > 15
-                                ? name.substring(0, 15) + "..."
-                                : name,
-                            "Tổng vi phạm": stats.total,
-                            "Vi phạm hành vi": stats.behavior,
-                            "Vi phạm nhận diện": stats.face,
-                          })
-                        )}
+                        data={reportData.class_statistics 
+                          ? Object.entries(reportData.class_statistics).map(
+                              ([name, stats]) => ({
+                                name:
+                                  name.length > 15
+                                    ? name.substring(0, 15) + "..."
+                                    : name,
+                                "Tổng vi phạm": stats.total || 0,
+                                "Vi phạm hành vi": stats.behavior || 0,
+                                "Vi phạm nhận diện": stats.face || 0,
+                              })
+                            )
+                          : []
+                        }
                       >
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis

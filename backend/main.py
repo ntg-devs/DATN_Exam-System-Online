@@ -1,6 +1,6 @@
 
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, UploadFile, File, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from services.socket_manager.connection_manager import ConnectionManager
 from services.behavior_detected.behavior_recognition import BehaviorRecognitionService
@@ -33,6 +33,19 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import timedelta
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import security utilities
+from security import (
+    create_access_token, verify_token, get_current_user, require_role,
+    check_rate_limit, get_client_ip,
+    validate_password_strength, hash_password, verify_password,
+    sanitize_string, sanitize_email, sanitize_student_id,
+    LOGIN_RATE_LIMIT_REQUESTS, LOGIN_RATE_LIMIT_WINDOW
+)
 
 
 
@@ -40,13 +53,39 @@ from datetime import timedelta
 # Khởi tạo App + CORS
 # ==========================
 app = FastAPI()
+
+# CORS Configuration - Lấy từ environment variables
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+
+# Nếu không có origins được cấu hình, sử dụng localhost mặc định
+if not allowed_origins:
+    allowed_origins = ["http://localhost:3000", "http://localhost:5173"]
+
+# Thêm ngrok URLs vào allowed origins (vì ngrok URLs thay đổi thường xuyên)
+# Cho phép tất cả ngrok-free.dev và ngrok.io domains qua regex
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https?://.*\.ngrok-free\.dev|https?://.*\.ngrok\.io",  # Cho phép localhost và ngrok
+    allow_origins=allowed_origins,  # Các origins được cấu hình cụ thể
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Thêm security headers vào mọi response"""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if os.getenv("ENVIRONMENT") == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 manager = ConnectionManager()
 # behavior_service = BehaviorRecognitionService("models/final_model2.pth")
@@ -1092,34 +1131,44 @@ class RegisterInput(BaseModel):
     role: str
 
 @app.post("/api/create-user")
-async def register_user(data: RegisterInput):
-    name = data.name.strip()
-    # email = data.email.strip().lower()
-    email = (data.email or "").strip().lower()
-    role = data.role.strip()
+async def register_user(data: RegisterInput, request: Request):
+    """Tạo user mới với validation và security improvements"""
+    # Sanitize inputs
+    name = sanitize_string(data.name.strip(), max_length=100)
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên không hợp lệ!")
+    
+    email = sanitize_email(data.email) if data.email else None
+    student_id = sanitize_student_id(data.student_id) if data.student_id else None
+    role = sanitize_string(data.role.strip(), max_length=20)
+    
+    if role not in ["teacher", "student", "admin"]:
+        raise HTTPException(status_code=400, detail="Vai trò không hợp lệ. Chỉ cho phép: teacher, student, admin")
 
-    print(data)
-
-    # 🔒 Giới hạn mật khẩu dưới 72 bytes để tránh lỗi
-
+    # Password validation
     if data.password:
-        password = data.password.encode("utf-8")[:72].decode("utf-8", errors="ignore")  
-    else :
-        password = "123456"
+        is_valid, error_msg = validate_password_strength(data.password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+        password = data.password
+    else:
+        # Generate a random password if not provided
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        password = ''.join(secrets.choice(alphabet) for i in range(12))
 
-    # Hash với rounds=12
-    hashed_password = bcrypt.using(rounds=12).hash(password)
+    # Hash password
+    hashed_password = hash_password(password)
 
-    if role not in ["teacher", "student"]:
-        raise HTTPException(status_code=400, detail="Vai trò không hợp lệ.")
-
+    # Check for existing users
     if email:
         existing = await users_collection.find_one({"email": email})
         if existing:
             raise HTTPException(status_code=400, detail="Email đã tồn tại!")
    
-    if data.student_id:
-        existing = await users_collection.find_one({"student_id": data.student_id})
+    if student_id:
+        existing = await users_collection.find_one({"student_id": student_id})
         if existing:
             raise HTTPException(status_code=400, detail="Mã sinh viên đã tồn tại!")
 
@@ -1127,7 +1176,7 @@ async def register_user(data: RegisterInput):
         "name": name,
         "email": email,
         "password": hashed_password,
-        "student_id": data.student_id,
+        "student_id": student_id,
         "role": role,
         "created_at": datetime.utcnow(),
         "is_active": True
@@ -1135,12 +1184,16 @@ async def register_user(data: RegisterInput):
 
     result = await users_collection.insert_one(user)
     inserted_user = await users_collection.find_one({"_id": result.inserted_id})
-
-    return {"success": True, "user": serialize_doc(inserted_user)}
+    
+    # Remove password from response
+    user_response = serialize_doc(inserted_user)
+    user_response.pop("password", None)
+    
+    return {"success": True, "user": user_response}
 
 
 @app.post("/api/update-user")
-async def update_user(data: dict):
+async def update_user(data: dict, current_user: dict = Depends(get_current_user)):
     """
     Cập nhật thông tin tài khoản (tên, email, mã sinh viên, role).
     Body: { id, name, email, student_id, role }
@@ -1201,9 +1254,9 @@ async def update_user(data: dict):
 
 
 @app.post("/api/delete-user")
-async def delete_user(data: dict):
+async def delete_user(data: dict, current_user: dict = Depends(require_role(["admin"]))):
     """
-    Xóa tài khoản theo id.
+    Xóa tài khoản theo id (chỉ admin mới có quyền).
     Body: { id }
     """
     user_id = data.get("id")
@@ -1215,10 +1268,10 @@ async def delete_user(data: dict):
     user = await users_collection.find_one({"_id": user_obj_id})
     if not user:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
-
-    # (Optionally có thể chặn xóa admin tại đây)
-    # if user.get("role") == "admin":
-    #     raise HTTPException(status_code=403, detail="Không thể xóa tài khoản admin.")
+    
+    # Không cho phép xóa admin
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Không thể xóa tài khoản admin.")
 
     await users_collection.delete_one({"_id": user_obj_id})
     return {"success": True}
@@ -1269,24 +1322,56 @@ async def toggle_user_status(data: dict):
 
     return {"success": True, "new_status": new_status}
 @app.post("/api/login")
-async def login_user(data: dict):
-    email = data.get("email", "").strip().lower()
+async def login_user(data: dict, request: Request):
+    """Login endpoint với rate limiting và JWT token"""
+    # Rate limiting cho login endpoint
+    client_ip = get_client_ip(request)
+    
+    if check_rate_limit(f"login_{client_ip}", LOGIN_RATE_LIMIT_REQUESTS, LOGIN_RATE_LIMIT_WINDOW):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Quá nhiều lần thử đăng nhập. Vui lòng thử lại sau 5 phút."
+        )
+    
+    # Sanitize inputs
+    email = sanitize_email(data.get("email", ""))
     password = data.get("password", "")
+    
+    if not email:
+        raise HTTPException(status_code=400, detail="Email không hợp lệ!")
 
     user = await users_collection.find_one({"email": email})
     if not user:
-        raise HTTPException(status_code=400, detail="Email không tồn tại!")
+        raise HTTPException(status_code=400, detail="Email hoặc mật khẩu không chính xác!")
 
-    # 🔐 Cắt password về 72 bytes để khớp với bcrypt hash
-    password_trimmed = password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+    # Check if user is active
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị vô hiệu hóa!")
 
-    if not bcrypt.verify(password_trimmed, user["password"]):
-        raise HTTPException(status_code=400, detail="Mật khẩu không chính xác!")
+    # Verify password
+    if not verify_password(password, user["password"]):
+        raise HTTPException(status_code=400, detail="Email hoặc mật khẩu không chính xác!")
+
+    # Create JWT token
+    access_token = create_access_token(
+        data={
+            "sub": str(user["_id"]),
+            "role": user.get("role", "student"),
+            "email": user.get("email", ""),
+            "student_id": user.get("student_id", "")
+        }
+    )
+
+    # Remove password from user data
+    user_response = serialize_doc(user)
+    user_response.pop("password", None)
 
     return {
         "success": True,
         "message": "Đăng nhập thành công!",
-        "user": serialize_doc(user),
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_response,
     }
 
 
@@ -1342,16 +1427,16 @@ async def check_face_registration_status(data: dict):
 
 
 @app.post("/api/change-password")
-async def change_password(data: dict):
+async def change_password(data: dict, request: Request, current_user: dict = Depends(get_current_user)):
     """
-    Đổi mật khẩu cho user
+    Đổi mật khẩu cho user (yêu cầu authentication)
     data: {
-        user_id: str,           # ID người dùng
         current_password: str,  # Mật khẩu hiện tại
         new_password: str       # Mật khẩu mới
     }
     """
-    user_id = data.get("user_id", "").strip()
+    # Lấy user_id từ JWT token
+    user_id = current_user.get("sub")
     current_password = data.get("current_password", "")
     new_password = data.get("new_password", "")
 
@@ -1361,8 +1446,10 @@ async def change_password(data: dict):
     if not current_password or not new_password:
         raise HTTPException(status_code=400, detail="Vui lòng nhập đầy đủ mật khẩu hiện tại và mật khẩu mới.")
 
-    if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự.")
+    # Validate password strength
+    is_valid, error_msg = validate_password_strength(new_password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
 
     # Lấy thông tin user
     user_obj_id = ObjectId(user_id)
@@ -1371,13 +1458,11 @@ async def change_password(data: dict):
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
 
     # Kiểm tra mật khẩu hiện tại
-    current_password_trimmed = current_password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
-    if not bcrypt.verify(current_password_trimmed, user["password"]):
+    if not verify_password(current_password, user["password"]):
         raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không chính xác.")
 
     # Hash mật khẩu mới
-    new_password_trimmed = new_password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
-    hashed_new_password = bcrypt.using(rounds=12).hash(new_password_trimmed)
+    hashed_new_password = hash_password(new_password)
 
     # Cập nhật mật khẩu
     await users_collection.update_one(
@@ -1392,6 +1477,10 @@ async def change_password(data: dict):
 
 
 active_exam_clients = []
+# WebSocket clients cho session updates (student và teacher)
+active_session_clients = []  # Tất cả clients đang xem sessions
+active_student_session_clients = {}  # {student_id: websocket} - cho sinh viên
+active_teacher_session_clients = {}  # {teacher_id: websocket} - cho giảng viên
 
 @app.websocket("/ws/exams")
 async def ws_exams(websocket: WebSocket):
@@ -1407,6 +1496,43 @@ async def ws_exams(websocket: WebSocket):
     finally:
         if websocket in active_exam_clients:
             active_exam_clients.remove(websocket)
+
+@app.websocket("/ws/sessions")
+async def ws_sessions(websocket: WebSocket):
+    """WebSocket endpoint cho realtime session updates (cho cả student và teacher)"""
+    await websocket.accept()
+    user_type = websocket.query_params.get("type", "")  # "student" hoặc "teacher"
+    user_id = websocket.query_params.get("user_id", "")
+    
+    active_session_clients.append(websocket)
+    
+    if user_type == "student" and user_id:
+        if user_id not in active_student_session_clients:
+            active_student_session_clients[user_id] = []
+        active_student_session_clients[user_id].append(websocket)
+        print(f"✅ Student {user_id} connected to session realtime")
+    elif user_type == "teacher" and user_id:
+        if user_id not in active_teacher_session_clients:
+            active_teacher_session_clients[user_id] = []
+        active_teacher_session_clients[user_id].append(websocket)
+        print(f"✅ Teacher {user_id} connected to session realtime")
+    else:
+        print("✅ Client connected to session realtime (no user type)")
+
+    try:
+        while True:
+            await asyncio.sleep(1)   # giữ kết nối mở
+    except WebSocketDisconnect:
+        print("❌ Client disconnected session realtime")
+    finally:
+        if websocket in active_session_clients:
+            active_session_clients.remove(websocket)
+        if user_type == "student" and user_id and user_id in active_student_session_clients:
+            if websocket in active_student_session_clients[user_id]:
+                active_student_session_clients[user_id].remove(websocket)
+        if user_type == "teacher" and user_id and user_id in active_teacher_session_clients:
+            if websocket in active_teacher_session_clients[user_id]:
+                active_teacher_session_clients[user_id].remove(websocket)
 
 
 # ✅ NEW: Hàm gửi realtime khi có phòng thi mới được tạo
@@ -1679,7 +1805,7 @@ async def get_users(data: dict = {}):
 # ================================
 
 @app.post("/api/admin/get-all-classes")
-async def admin_get_all_classes(data: dict = {}):
+async def admin_get_all_classes(data: dict = {}, current_user: dict = Depends(require_role(["admin"]))):
     """
     Admin: Lấy tất cả lớp học (môn học) trong hệ thống
     """
@@ -1691,7 +1817,7 @@ async def admin_get_all_classes(data: dict = {}):
 
 
 @app.post("/api/admin/create-subject")
-async def admin_create_subject(data: dict):
+async def admin_create_subject(data: dict, current_user: dict = Depends(require_role(["admin"]))):
     """
     Admin: Tạo môn học và phân giảng viên
     data: {
@@ -1800,7 +1926,7 @@ Vui lòng đăng nhập vào hệ thống để xem chi tiết và quản lý m�
 
 
 @app.post("/api/admin/get-all-teachers")
-async def admin_get_all_teachers(data: dict = {}):
+async def admin_get_all_teachers(data: dict = {}, current_user: dict = Depends(require_role(["admin"]))):
     """
     Admin: Lấy danh sách tất cả giảng viên để phân công
     """
@@ -1812,7 +1938,7 @@ async def admin_get_all_teachers(data: dict = {}):
 
 
 @app.post("/api/admin/update-subject-teacher")
-async def admin_update_subject_teacher(data: dict):
+async def admin_update_subject_teacher(data: dict, current_user: dict = Depends(require_role(["admin"]))):
     """
     Admin: Cập nhật giảng viên cho môn học đã tồn tại
     data: {
@@ -2543,6 +2669,22 @@ async def create_exam_session(payload: dict):
     result = await exam_sessions_collection.insert_one(session)
     session["_id"] = str(result.inserted_id)
 
+    # Broadcast session created event
+    exam_doc = await exams_collection.find_one({"_id": ObjectId(exam_id)})
+    class_id = exam_doc.get("class_id") if exam_doc else None
+    class_doc = None
+    if class_id:
+        class_doc = await classes_collection.find_one({"_id": ObjectId(class_id)})
+    
+    await broadcast_session_realtime({
+        "type": "session_created",
+        "session": serialize_doc(session),
+        "exam_id": exam_id,
+        "exam_name": exam_doc.get("name") if exam_doc else "",
+        "class_id": str(class_id) if class_id else None,
+        "class_name": class_doc.get("name") if class_doc else "",
+    })
+
     return {"success": True, "session": session}
 
 
@@ -2606,14 +2748,27 @@ async def add_students_to_exam_session(payload: dict):
 
     # --- Broadcast tới sinh viên (thông báo chuông) ---
     if exam_id:
+        # Broadcast qua old endpoint (cho compatibility)
         await broadcast_session_update({
-        "type": "added_to_session",
-        "exam_id": exam_id,
-        "session_id": session_id,
-        "student_ids": [str(s) for s in oid_students],
-        "nameExam": exam_doc.get("name") if exam_doc else "",
-        "nameSession": session_doc.get("name"),
-    })
+            "type": "added_to_session",
+            "exam_id": exam_id,
+            "session_id": session_id,
+            "student_ids": [str(s) for s in oid_students],
+            "nameExam": exam_doc.get("name") if exam_doc else "",
+            "nameSession": session_doc.get("name"),
+        })
+        
+        # Broadcast qua new realtime endpoint
+        await broadcast_session_realtime({
+            "type": "session_updated",
+            "session_id": session_id,
+            "exam_id": exam_id,
+            "student_ids": [str(s) for s in oid_students],
+            "action": "students_added",
+            "exam_name": exam_doc.get("name") if exam_doc else "",
+            "session_name": session_doc.get("name"),
+            "class_name": class_doc.get("name") if class_doc else "",
+        })
 
     # --- Gửi email cho từng sinh viên được phân vào ca thi ---
     try:
@@ -2695,6 +2850,42 @@ async def broadcast_session_update(event: dict):
     for ws in dead:
         if ws in active_exam_clients:
             active_exam_clients.remove(ws)
+
+async def broadcast_session_realtime(event: dict):
+    """Gửi realtime session updates đến tất cả clients đang xem sessions"""
+    dead = []
+    
+    # Broadcast đến tất cả clients
+    for ws in active_session_clients:
+        try:
+            await ws.send_json(event)
+        except:
+            dead.append(ws)
+    
+    # Broadcast đến specific students nếu có
+    student_ids = event.get("student_ids", [])
+    if student_ids:
+        for student_id in student_ids:
+            if student_id in active_student_session_clients:
+                for ws in active_student_session_clients[student_id]:
+                    try:
+                        await ws.send_json(event)
+                    except:
+                        dead.append(ws)
+    
+    # Broadcast đến teachers nếu có teacher_id
+    teacher_id = event.get("teacher_id")
+    if teacher_id and teacher_id in active_teacher_session_clients:
+        for ws in active_teacher_session_clients[teacher_id]:
+            try:
+                await ws.send_json(event)
+            except:
+                dead.append(ws)
+    
+    # Clean up dead connections
+    for ws in dead:
+        if ws in active_session_clients:
+            active_session_clients.remove(ws)
 
 @app.post("/api/get-students-in-session")
 async def get_students_in_session(data: dict):
@@ -3037,7 +3228,7 @@ async def get_student_current_sessions(data: dict):
 # ================================
 
 @app.post("/api/admin/generate-report")
-async def generate_report(data: dict):
+async def generate_report(data: dict, current_user: dict = Depends(require_role(["admin"]))):
     """
     Tạo báo cáo tổng hợp cho admin
     data: {

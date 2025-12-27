@@ -1,20 +1,77 @@
 import { URL_API } from "../utils/path";
 
 const API_URL = `${URL_API}/`;
+
+// Helper function để gọi API với token tự động
+async function apiCall(endpoint, options = {}) {
+  const token = localStorage.getItem("access_token");
+  
+  const headers = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
+  
+  // Thêm header để bypass ngrok browser warning (nếu dùng ngrok)
+  if (API_URL.includes("ngrok")) {
+    headers["ngrok-skip-browser-warning"] = "true";
+  }
+  
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  
+  const response = await fetch(`${API_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+  
+  // Xử lý 401 Unauthorized
+  if (response.status === 401) {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user");
+    // Redirect to login nếu đang ở browser
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+    throw new Error("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại!");
+  }
+  
+  return response;
+}
 // const API_URL = "https://103.142.24.110:8000/api/";
 // const API_URL = "https://unworkable-bernie-merely.ngrok-free.dev/api/";
 
 // 🧩 Lấy danh sách phòng thi
 export async function getExams() {
   try {
-    const res = await fetch(API_URL + "exams", {
+    const res = await apiCall("exams", {
       method: "GET",
     });
-    if (!res.ok) throw new Error("Không thể lấy danh sách phòng thi");
-    return await res.json();
+    
+    // Kiểm tra content-type trước khi parse JSON
+    const contentType = res.headers.get("content-type") || "";
+    
+    // Nếu response là HTML (ngrok warning page hoặc error page)
+    if (contentType.includes("text/html")) {
+      const text = await res.text();
+      console.error("[❌] Server trả về HTML thay vì JSON. Có thể do ngrok warning page hoặc endpoint không tồn tại.");
+      console.error("[❌] Response preview:", text.substring(0, 300));
+      
+      // Trả về empty array để không crash app
+      return { exams: [] };
+    }
+    
+    if (!res.ok) {
+      console.error(`[❌] getExams failed with status ${res.status}`);
+      return { exams: [] };
+    }
+    
+    const data = await res.json();
+    return data;
   } catch (err) {
     console.error("[❌] Lỗi getExams:", err);
-    return [];
+    // Trả về object với exams array để consistent với code hiện tại
+    return { exams: [] };
   }
 }
 
@@ -74,13 +131,27 @@ export async function createAccount(payload) {
 
     if (!res.ok) {
       console.error("[❌] Lỗi tạo tài khoản:", data);
-      throw new Error(data.detail || "Tạo tài khoản thất bại!");
+      // Handle different error formats
+      let errorMessage = "Tạo tài khoản thất bại!";
+      if (data.detail) {
+        errorMessage = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      } else if (data.message) {
+        errorMessage = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
+      } else if (typeof data === "string") {
+        errorMessage = data;
+      }
+      throw new Error(errorMessage);
     }
 
     return data;
   } catch (err) {
     console.error("[❌] Lỗi kết nối server:", err);
-    throw err;
+    // Ensure we always throw a string error message
+    if (err instanceof Error) {
+      throw err;
+    } else {
+      throw new Error(String(err));
+    }
   }
 }
 
@@ -112,13 +183,13 @@ export async function getAllUsers(payload = {}) {
  */
 export async function updateUser(payload) {
   try {
-    const res = await fetch(API_URL + "update-user", {
+    const res = await apiCall("update-user", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
     const data = await res.json();
+    
     if (!res.ok) throw new Error(data.detail || "Cập nhật tài khoản thất bại!");
 
     return data; // { success: true, user: {...} }
@@ -129,18 +200,18 @@ export async function updateUser(payload) {
 }
 
 /**
- * Xóa tài khoản theo id
+ * Xóa tài khoản theo id (chỉ admin)
  * @param {string} id
  */
 export async function deleteUser(id) {
   try {
-    const res = await fetch(API_URL + "delete-user", {
+    const res = await apiCall("delete-user", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
 
     const data = await res.json();
+    
     if (!res.ok) throw new Error(data.detail || "Xóa tài khoản thất bại!");
 
     return data; // { success: true }
@@ -151,10 +222,8 @@ export async function deleteUser(id) {
 }
 export async function toggleAccountStatus(id) {
   try {
-    console.log(id)
-    const res = await fetch(API_URL + "toggle-user-status", {
+    const res = await apiCall("toggle-user-status", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
 
@@ -163,7 +232,7 @@ export async function toggleAccountStatus(id) {
 
     return data; // { success: true }
   } catch (err) {
-    console.error("[❌] Lỗi deleteUser:", err);
+    console.error("[❌] Lỗi toggleAccountStatus:", err);
     return { success: false, detail: err.message };
   }
 }
@@ -196,13 +265,17 @@ export const teacherLogin = async (payload) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    // const res = await fetch("https://103.142.24.110:8000/api/login", {
-    //   method: "POST",
-    //   headers: { "Content-Type": "application/json" },
-    //   body: JSON.stringify(payload),
-    // });
 
     const data = await res.json();
+    
+    // Lưu token và user info vào localStorage nếu login thành công
+    if (data.success && data.access_token) {
+      localStorage.setItem("access_token", data.access_token);
+      if (data.user) {
+        localStorage.setItem("user", JSON.stringify(data.user));
+      }
+    }
+    
     return data;
   } catch (err) {
     console.error("Lỗi khi đăng nhập:", err);
@@ -631,9 +704,8 @@ export async function removeStudentFromSession({ session_id, student_id }) {
  */
 export async function adminGetAllClasses() {
   try {
-    const res = await fetch(API_URL + "admin/get-all-classes", {
+    const res = await apiCall("admin/get-all-classes", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
 
@@ -653,9 +725,8 @@ export async function adminGetAllClasses() {
  */
 export async function adminCreateSubject(payload) {
   try {
-    const res = await fetch(API_URL + "admin/create-subject", {
+    const res = await apiCall("admin/create-subject", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -674,9 +745,8 @@ export async function adminCreateSubject(payload) {
  */
 export async function adminGetAllTeachers() {
   try {
-    const res = await fetch(API_URL + "admin/get-all-teachers", {
+    const res = await apiCall("admin/get-all-teachers", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
 
@@ -692,17 +762,22 @@ export async function adminGetAllTeachers() {
 
 /**
  * Đổi mật khẩu cho user
- * @param {Object} payload { user_id, current_password, new_password }
+ * @param {Object} payload { current_password, new_password }
+ * Note: user_id không cần nữa, backend lấy từ JWT token
  */
 export async function changePassword(payload) {
   try {
-    const res = await fetch(API_URL + "change-password", {
+    const res = await apiCall("change-password", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        current_password: payload.current_password,
+        new_password: payload.new_password
+        // Không gửi user_id nữa, backend lấy từ token
+      }),
     });
 
     const data = await res.json();
+    
     if (!res.ok) throw new Error(data.detail || "Đổi mật khẩu thất bại!");
 
     return data; // { success: true, message: "..." }
@@ -762,9 +837,8 @@ export async function getStudentCurrentSessions(payload) {
  */
 export async function generateReport(payload) {
   try {
-    const res = await fetch(API_URL + "admin/generate-report", {
+    const res = await apiCall("admin/generate-report", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 

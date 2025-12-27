@@ -7,6 +7,7 @@ import {
   MdArrowDownward,
   MdCheckCircle,
 } from "react-icons/md";
+import { ImSpinner2 } from "react-icons/im";
 
 import toast, { Toaster } from "react-hot-toast";
 import { createAccount } from "../../services/services.js";
@@ -28,6 +29,7 @@ function FaceRegister() {
   const [studentName, setStudentName] = useState("");
   const [step, setStep] = useState(0);
   const [showPolicy, setShowPolicy] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
@@ -198,6 +200,7 @@ function FaceRegister() {
       return;
     }
 
+    setIsUploading(true);
     setStatus("Đang xử lý...");
     const blob = new Blob(chunks, { type: "video/webm" });
     const formData = new FormData();
@@ -220,6 +223,7 @@ function FaceRegister() {
           
           if (data.type === "face_register_success") {
             // Xử lý thành công → cập nhật Redux và redirect
+            setIsUploading(false);
             setStatus("Đăng ký thành công!");
             toast.success(data.message);
             
@@ -236,6 +240,7 @@ function FaceRegister() {
             navigate("/student_dashboard");
           } else if (data.type === "face_register_failed") {
             // Xử lý thất bại
+            setIsUploading(false);
             setStatus(`Lỗi: ${data.error}`);
             toast.error(`Đăng ký thất bại: ${data.error}`);
             ws.close();
@@ -247,6 +252,7 @@ function FaceRegister() {
 
         ws.onerror = (error) => {
           console.error("WebSocket error:", error);
+          setIsUploading(false);
           toast.error("Lỗi kết nối WebSocket");
         };
 
@@ -261,7 +267,9 @@ function FaceRegister() {
           setStatus("Video đã được gửi. Đang xử lý...");
           toast.success("Video đã được gửi. Vui lòng đợi hệ thống xử lý...");
           // Không redirect ngay, đợi WebSocket thông báo thành công
+          // Giữ isUploading = true để hiển thị loading
         } else {
+          setIsUploading(false);
           setStatus(`Lỗi: ${data.detail || "Không xác định"}`);
           toast.error(`Lỗi: ${data.detail || "Không xác định"}`);
           ws.close();
@@ -269,6 +277,7 @@ function FaceRegister() {
       }
     } catch (err) {
       console.error("❌ Upload error:", err);
+      setIsUploading(false);
       setStatus("Lỗi kết nối server");
       toast.error(`Đăng ký danh tính thất bại:\n${err.message}`);
     }
@@ -341,9 +350,19 @@ function FaceRegister() {
         {previewUrl && !recording && (
           <button
             onClick={uploadVideo}
-            className="w-full bg-green-600 text-white py-3 rounded-xl hover:bg-green-700 transition font-medium"
+            disabled={isUploading}
+            className={`w-full bg-green-600 text-white py-3 rounded-xl hover:bg-green-700 transition font-medium flex items-center justify-center gap-2 ${
+              isUploading ? "opacity-70 cursor-not-allowed" : ""
+            }`}
           >
-            Xác nhận
+            {isUploading ? (
+              <>
+                <ImSpinner2 className="animate-spin" size={20} />
+                <span>Đang xử lý...</span>
+              </>
+            ) : (
+              <span>Xác nhận</span>
+            )}
           </button>
         )}
 
