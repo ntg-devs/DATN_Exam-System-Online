@@ -29,30 +29,30 @@ export default function StudentViolationHistory() {
   const behaviorMap = {
     hand_move: "Cử động tay bất thường",
     mobile_use: "Sử dụng điện thoại trong khi thi",
-    side_watching: "Nghiêng mặt / xoay mặt sang hướng khác",
-    mouth_open: "Mở miệng bất thường/ Có dấu hiệu trao đổi",
-    eye_movement: "Đảo mắt bất thường/nhìn ra ngoài màn hình",
-    look_away: "Đảo mắt bất thường/nhìn ra ngoài màn hình",
+    side_watching: "Nghiêng mặt / Xoay mặt sang hướng khác",
+    mouth_open: "Mở miệng bất thường / Có dấu hiệu trao đổi",
+    eye_movement: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
+    look_away: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
     multi_face: "Phát hiện nhiều người trong khung hình",
-    mismatch_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
-    unknown_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
+    mismatch_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
+    unknown_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
   };
 
   const faceLabelMap = {
-    unknown: "Khuôn mặt không khớp/nghi vấn thi hộ",
-    other_student: "Khuôn mặt không khớp/nghi vấn thi hộ",
+    unknown: "Khuôn mặt không khớp / Nghi vấn thi hộ",
+    other_student: "Khuôn mặt không khớp / Nghi vấn thi hộ",
     multiple_faces: "Phát hiện nhiều người trong khung hình",
     no_face: "Không phát hiện khuôn mặt",
-    looking_away: "Đảo mắt bất thường/nhìn ra ngoài màn hình",
+    looking_away: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
     phone_detected: "Sử dụng điện thoại trong khi thi",
   };
 
   const reasonMap = {
     multi_face: "Phát hiện nhiều người trong khung hình",
     no_face: "Không phát hiện khuôn mặt",
-    mismatch: "Khuôn mặt không khớp/nghi vấn thi hộ",
-    mismatch_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
-    unknown_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
+    mismatch: "Khuôn mặt không khớp / Nghi vấn thi hộ",
+    mismatch_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
+    unknown_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
     unknown: "Lý do không xác định",
   };
 

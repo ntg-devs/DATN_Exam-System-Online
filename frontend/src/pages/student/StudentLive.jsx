@@ -86,7 +86,7 @@ export default function StudentLive({ fps = 4 }) {
     mobile_use: "Sử dụng điện thoại",
     side_watching: "Nghiêng mặt sang hướng khác",
     mouth_open: "Mở miệng trao đổi",
-    eye_movement: "Liếc mắt nhiều hướng",
+    eye_movement: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
   };
   const faceLabelMap = {
     unknown: "Người lạ",

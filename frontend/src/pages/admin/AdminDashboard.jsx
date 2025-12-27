@@ -796,9 +796,9 @@ export default function AdminDashboard() {
         return "Sử dụng điện thoại trong khi thi";
       case "eye_movement":
       case "look_away":
-        return "Đảo mắt bất thường/nhìn ra ngoài màn hình";
+        return "Đảo mắt bất thường / Nhìn ra ngoài màn hình";
       case "side_watching":
-        return "Nghiêng mặt / xoay mặt sang hướng khác";
+        return "Nghiêng mặt / Xoay mặt sang hướng khác";
       case "hand_move":
         return "Cử động tay bất thường";
       case "mouth_open":
@@ -807,7 +807,7 @@ export default function AdminDashboard() {
         return "Phát hiện nhiều người trong khung hình";
       case "mismatch_face":
       case "unknown_face":
-        return "Khuôn mặt không khớp/nghi vấn thi hộ";
+        return "Khuôn mặt không khớp / Nghi vấn thi hộ";
       default:
         return behavior;
     }

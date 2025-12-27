@@ -15,9 +15,9 @@ const getReasonText = (reason) => {
       return "Không phát hiện khuôn mặt";
     case "mismatch_face":
     case "unknown_face":
-      return "Khuôn mặt không khớp/nghi vấn thi hộ";
+      return "Khuôn mặt không khớp / Nghi vấn thi hộ";
     case "look_away":
-      return "Đảo mắt bất thường/nhìn ra ngoài màn hình";
+      return "Đảo mắt bất thường / Nhìn ra ngoài màn hình";
     case "cheating":
       return "Gian lận";
     default:
@@ -29,12 +29,12 @@ const behaviorMap = {
   hand_move: "Cử động tay bất thường",
   mobile_use: "Sử dụng điện thoại trong khi thi",
   side_watching: "Nghiêng mặt / xoay mặt sang hướng khác",
-  mouth_open: "Mở miệng bất thường/ Có dấu hiệu trao đổi",
-  eye_movement: "Đảo mắt bất thường/nhìn ra ngoài màn hình",
-  look_away: "Đảo mắt bất thường/nhìn ra ngoài màn hình",
+  mouth_open: "Mở miệng bất thường / Có dấu hiệu trao đổi",
+  eye_movement: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
+  look_away: "Đảo mắt bất thường / Nhìn ra ngoài màn hình",
   multi_face: "Phát hiện nhiều người trong khung hình",
-  mismatch_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
-  unknown_face: "Khuôn mặt không khớp/nghi vấn thi hộ",
+  mismatch_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
+  unknown_face: "Khuôn mặt không khớp / Nghi vấn thi hộ",
 };
 
 export default function TeacherViolationHistory() {
